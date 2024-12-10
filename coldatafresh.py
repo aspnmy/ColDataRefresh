@@ -16,6 +16,7 @@ ENABLE_MULTITHREADING = False  # 设置为 False 时禁用多线程
 THREAD_COUNT = 4  # 线程数
 BENCHMARK_SIZE_GB = 1  # 基准速度测试大小 (GB)
 RATIO = 0.3 # 假设基准测试读取值为100MB/s, 若测试文件读取速度为100*0.3 = 30MB/s，则判断为冷数据
+SKIP_SIZE = 1 * 1024**2 #小于1（MB）的文件会被跳过。删除此行或填0则不跳过文件。
 EXIT_FLAG = False  # 用于检测是否终止程序,请不要修改这个
 
 def signal_handler(sig, frame):
@@ -90,13 +91,14 @@ def benchmark_speed(directory, size_in_gb=BENCHMARK_SIZE_GB):
                     os.remove(file_path)
     return benchmark_results
 
-def refresh_file(file_path, benchmark_speed_results):
+def refresh_file(file_path, benchmark_speed_results, max_retries=2):
     if EXIT_FLAG:
         return
 
     temp_path = file_path + ".temp"
     checksum_src = 0
     checksum_dest = 0
+    retries = 0
 
     try:
         file_size = os.path.getsize(file_path)
@@ -104,7 +106,7 @@ def refresh_file(file_path, benchmark_speed_results):
         # 判断文件大小，选择合适的基准速度
         if file_size > 100 * 1024**2:  # 大于100MB，使用大文件基准
             benchmark_speed = benchmark_speed_results["large"]["speed"]
-        elif file_size > 10 * 1024**2:  # 10MB-100MB，使用中文件基准
+        elif file_size > 10 * 1024**2:  # 10MB-100MB，使用中等文件基准
             benchmark_speed = benchmark_speed_results["medium"]["speed"]
         else:  # 小于10MB，使用小文件基准
             benchmark_speed = benchmark_speed_results["small"]["speed"]
@@ -114,26 +116,45 @@ def refresh_file(file_path, benchmark_speed_results):
             print(f"Skipping tiny file: {file_path} (size: {file_size} bytes)")
             return
 
+        if SKIP_SIZE and file_size <= SKIP_SIZE:
+            print(f"Skipping tiny file: {file_path} (size: {file_size} bytes)")
+            return
+
         file_speed = test_read_speed(file_path)
 
         if file_speed < benchmark_speed * RATIO:
             print(f"Refreshing cold data: {file_path} (read speed: {file_speed:.2f} MB/s, benchmark: {benchmark_speed:.2f} MB/s)")
 
             # 读取和写入
-            with open(file_path, "rb") as src, open(temp_path, "wb") as dest:
-                while chunk := src.read(BUFFER_SIZE):
-                    checksum_src = zlib.crc32(chunk, checksum_src)
-                    dest.write(chunk)
-                    checksum_dest = zlib.crc32(chunk, checksum_dest)
+            while retries < max_retries:
+                with open(file_path, "rb") as src, open(temp_path, "wb") as dest:
+                    while chunk := src.read(BUFFER_SIZE):
+                        checksum_src = zlib.crc32(chunk, checksum_src)
+                        dest.write(chunk)
+                        checksum_dest = zlib.crc32(chunk, checksum_dest)
 
-            # 校验
-            if checksum_src != checksum_dest:
-                raise ValueError(f"Checksum mismatch for file {file_path}")
+                # 校验
+                if checksum_src == checksum_dest:
+                    break
+                else:
+                    retries += 1
+                    print(f"CRC mismatch, retrying {file_path}... ({retries}/{max_retries})")
+                    os.remove(temp_path)
+            else:
+                # 如果多次重试失败，保留源文件并报告损坏
+                print(f"Failed to refresh {file_path} after {max_retries} retries. The file might be corrupted.")
+                return
 
             # 保留原文件时间
             file_stat = os.stat(file_path)
             shutil.move(temp_path, file_path)
             os.utime(file_path, (file_stat.st_atime, file_stat.st_mtime))  # 恢复时间戳
+
+            # 保留原文件夹时间
+            if os.path.isdir(file_path):
+                dir_stat = os.stat(os.path.dirname(file_path))
+                os.utime(os.path.dirname(file_path), (dir_stat.st_atime, dir_stat.st_mtime))  # 恢复目录时间戳
+
             print(f"File refreshed: {file_path}")
 
         else:
@@ -145,6 +166,7 @@ def refresh_file(file_path, benchmark_speed_results):
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
+
 
 # 多线程刷新文件
 def refresh_files(cold_files, benchmark_speed):
@@ -241,6 +263,7 @@ def main():
     print("Refreshing cold files...")
     refresh_files(cold_files, benchmark_speed_value)
     print("All tasks completed.")
+    input("Press Enter to exit...")
 
 if __name__ == "__main__":
     main()
