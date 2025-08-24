@@ -1,1 +1,1 @@
-pyinstaller --uac-admin coldatafresh.py
+pyinstaller --onefile --uac-admin coldatafresh.py
