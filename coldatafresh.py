@@ -8,8 +8,10 @@ import time
 import zlib
 import ctypes
 import signal
+import threading
+import concurrent.futures
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import TypedDict, List, Optional
 from datetime import datetime
 from types import FrameType
 from enum import Enum, auto
@@ -31,6 +33,8 @@ class Config:
     MEDIUM_FILE: int = 10 * 1024**2       # 10MB-100MB为中等文件
     REPORT_INTERVAL: float = 0.2
     SKIP_SMALL: int = 1 * 1024**2        # 1MB以下为小文件（可跳过）
+    MAX_WORKERS: int = 4                  # 最大线程数
+    MEMORY_LIMIT_MB: int = 512            # 内存限制(MB)
 
 class FileCategory(Enum):
     SMALL = auto()
@@ -150,7 +154,7 @@ class Dashboard:
             f"运行阶段: {self.terminal.colored_text(phase.ljust(12), fg=33)} 耗时: {elapsed:.1f}s",
             f"处理进度: [{process_bar}] {stats.progress:.1%}",
             f"{scan_info}",
-            f"处理速度: {stats.speed:.1f} MB/s 扫描速度: {scan_speed:.1f} 文件/秒" if stats.speed > 0 else f"扫描速度: {scan_speed:.1f} 文件/秒",
+            f"扫描速度: {scan_speed:.1f} MB/s, 处理速度: {stats.speed:.1f} MB/s ",
             f"文件分类: 大（大于100MB）({stats.large}) 中（10MB - 100MB）({stats.medium}) 小（小于10MB）({stats.small})",
             f"损坏的文件: {self.terminal.colored_text(str(stats.corrupted), fg=31)}",
             f"本项目地址:https://github.com/aspnmy/ColDataRefresh.git ",
@@ -201,36 +205,50 @@ class FileOperator:
         return crc
 
     @classmethod
-    def refresh_file(cls, path: str, stats: OperationStats, dashboard: Dashboard) -> None:
+    def refresh_file(cls, path: str, stats: OperationStats, dashboard: Dashboard) -> dict:
+        """处理单个文件并返回统计信息（线程安全版本）"""
         temp_file = f"{path}.tmp"
         error_type = "UNKNOWN"
+        result = {
+            'small': 0,
+            'large': 0,
+            'medium': 0,
+            'corrupted': 0,
+            'speed': 0.0
+        }
         
         try:
             start_time = time.time()
             
             # 文件分类处理
-            if (size := os.path.getsize(path)) < config.SKIP_SMALL:
-                stats.small += 1
-                return
+            size = os.path.getsize(path)
+            if size < config.SKIP_SMALL:
+                result['small'] = 1
+                return result
 
             category = cls.categorize_file(size)
-            stats.__dict__[category.name.lower()] += 1
+            result[category.name.lower()] = 1
             
             # 主体处理逻辑
             src_crc = cls.checksum_file(path)
             for attempt in range(config.MAX_RETRIES + 1):
                 try:
                     dest_crc = 0
+                    processed_size = 0
                     with open(path, 'rb') as src, open(temp_file, 'wb') as dest:
                         while chunk := src.read(config.BUFFER_SIZE):
                             dest.write(chunk)
                             dest_crc = zlib.crc32(chunk, dest_crc)
-                            # 实时计算处理速度
-                            stats.speed = len(chunk) / (time.time() - start_time + 0.001) / 1024**2
+                            processed_size += len(chunk)
+                    
+                    # 计算整个文件的平均处理速度
+                    process_time = time.time() - start_time
+                    if process_time > 0:
+                        result['speed'] = processed_size / process_time / 1024**2
                     
                     if src_crc == dest_crc:
                         os.replace(temp_file, path)
-                        return
+                        return result
                     error_type = "CHECKSUM_ERROR"
                 except (IOError, OSError) as e:
                     error_type = type(e).__name__
@@ -240,11 +258,11 @@ class FileOperator:
                 
                 print(f"尝试重试 ({attempt+1}/{config.MAX_RETRIES})...")
 
-            stats.corrupted += 1
+            result['corrupted'] = 1
             raise RuntimeError(f"操作失败: {error_type}")
             
         except Exception as e:
-            stats.corrupted += 1
+            result['corrupted'] = 1
             # 直接报错信息
             print(f"❌ 无法读取文件: {path}")
             print(f"   错误类型: {error_type}")
@@ -258,6 +276,8 @@ class FileOperator:
             except Exception as log_error:
                 print(f"⚠️ 日志记录失败: {str(log_error)}")
             dashboard.update_display(stats, "错误处理")
+        finally:
+            return result
 
 # ============================== 主控流程模块 ==============================
 class ApplicationController:
@@ -281,6 +301,17 @@ class ApplicationController:
                     if os.path.getmtime(path) < cutoff:
                         file_list.append(path)
                         self.stats.scanned += 1
+                        
+                        # 在扫描阶段就进行文件分类统计
+                        try:
+                            size = os.path.getsize(path)
+                            if size < config.SKIP_SMALL:
+                                self.stats.small += 1
+                            else:
+                                category = FileOperator.categorize_file(size)
+                                self.stats.__dict__[category.name.lower()] += 1
+                        except (OSError, FileNotFoundError):
+                            pass  # 忽略无法获取大小的文件
                         
                         # 实时刷新界面 (每秒最多10次)
                         if time.time() - self.dashboard.last_update > 0.1:
@@ -312,21 +343,50 @@ class ApplicationController:
         total_files = len(target_files)
         self.stats.progress = 0.1  # 进入处理阶段初始进度
 
-        # 文件处理阶段
+        # 文件处理阶段 - 多线程优化
         start_time = time.time()
-        for idx, path in enumerate(target_files, 1):
-            self.stats.progress = idx / total_files if total_files else 0
-            self.stats.processed = idx
-            
-            if skip_small and os.path.getsize(path) < config.SKIP_SMALL:
-                self.stats.small += 1
-                continue
+        
+        # 内存优化：分批处理文件，避免内存溢出
+        batch_size = max(1, len(target_files) // (config.MAX_WORKERS * 2))
+        processed_count = 0
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+            # 分批提交任务
+            futures = []
+            for path in target_files:
+                if skip_small and os.path.getsize(path) < config.SKIP_SMALL:
+                    self.stats.small += 1
+                    processed_count += 1
+                    continue
                 
-            try:
-                FileOperator.refresh_file(path, self.stats, self.dashboard)
-            except Exception as e:
-                print(f"\n处理失败: {path}\n原因: {str(e)}")
-            finally:
+                # 提交任务到线程池
+                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard)
+                futures.append(future)
+                
+                # 内存控制：限制同时运行的任务数量
+                if len(futures) >= config.MAX_WORKERS * 2:
+                    # 等待部分任务完成
+                    for future in concurrent.futures.as_completed(futures[:config.MAX_WORKERS]):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            print(f"\n处理失败: {str(e)}")
+                        processed_count += 1
+                        self.stats.processed = processed_count
+                        self.stats.progress = processed_count / total_files if total_files else 0
+                        self.dashboard.update_display(self.stats, "处理中")
+                    
+                    futures = futures[config.MAX_WORKERS:]
+            
+            # 等待剩余任务完成
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    print(f"\n处理失败: {str(e)}")
+                processed_count += 1
+                self.stats.processed = processed_count
+                self.stats.progress = processed_count / total_files if total_files else 0
                 self.dashboard.update_display(self.stats, "处理中")
 
         # 结束阶段
