@@ -129,7 +129,7 @@ class Dashboard:
     def _render_header(self) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
-        header = self.terminal.colored_text(" SSD冷数据维护系统 v4.3 作者:aspnmy By Python3.12.3 ", bg=44)
+        header = self.terminal.colored_text(" SSD冷数据维护系统 v4.3.2 作者:aspnmy By Python3.12.3 ", bg=44)
         print(self._safe_print(f"\n{h_line}\n{header:^70}\n{h_line}"))
 
     def _render_stats(self, stats: OperationStats, phase: str) -> None:
