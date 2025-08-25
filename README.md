@@ -1,6 +1,7 @@
 # ColDataRefresh SSD冷数据维护系统 v4.3
 
 ## 执行本程序 需要python3.12.0以上环境
+- 首次执行记得 先运行install_dependencies.bat 安装所有依赖
 智能检测固态硬盘的冷数据并解决冷数据掉速问题，带数据校验功能
 [English](/README_EN.md)
 - https://aspnmy.blog.csdn.net/article/details/150638290?spm=1011.2415.3001.5331
