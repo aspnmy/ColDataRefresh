@@ -1,1 +1,11 @@
 elevate
+zlib
+ctypes
+signal
+threading
+concurrent
+dataclasses
+datetime
+FrameType
+Enum
+json
