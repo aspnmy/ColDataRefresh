@@ -8,13 +8,27 @@ cd /d "%~dp0"
 REM 从version.txt读取版本号
 set "DEFAULT_VERSION=4.3.2"
 if exist "version.txt" (
-    set /p "APP_VERSION=<version.txt"
-    set "APP_VERSION=!APP_VERSION: =!"
+    REM 使用更可靠的方式读取版本号，避免换行符和空格问题
+    for /f "usebackq tokens=1 delims=\r\n" %%i in ("version.txt") do (
+        set "APP_VERSION=%%i"
+        REM 移除所有空格
+        set "APP_VERSION=!APP_VERSION: =!"
+        goto VersionFound
+    )
+    :VersionFound
+    REM 验证版本号是否有效
+    if "!APP_VERSION!"=="" (
+        echo 警告：version.txt文件内容为空，使用默认版本 !DEFAULT_VERSION!
+        set "APP_VERSION=!DEFAULT_VERSION!"
+    )
 ) else (
     set "APP_VERSION=!DEFAULT_VERSION!"
     echo 警告：未找到version.txt文件，使用默认版本 !DEFAULT_VERSION!
     echo !DEFAULT_VERSION! > version.txt
 )
+
+REM 显示当前使用的版本号
+ echo 当前版本号: !APP_VERSION!
 
 echo 正在构建冷数据维护工具 v!APP_VERSION!..
 
