@@ -13,7 +13,7 @@ cd /d "%SCRIPT_DIR%"
 echo 切换后目录: %cd%
 
 REM 从version.txt读取版本号
-set "DEFAULT_VERSION=4.3.3"
+set "DEFAULT_VERSION=4.5.0"
 set "VERSION_FILE=%SCRIPT_DIR%version.txt"
 
 echo 尝试读取版本文件: %VERSION_FILE%
@@ -22,13 +22,14 @@ REM 检查文件是否存在
 if exist "%VERSION_FILE%" (
     echo 找到版本文件: %VERSION_FILE%
     REM 使用绝对路径和更可靠的方式读取版本号
+    set "APP_VERSION="
     for /f "usebackq tokens=1 delims=\r\n" %%i in ("%VERSION_FILE%") do (
-        set "APP_VERSION=%%i"
-        REM 移除所有空格
-        set "APP_VERSION=!APP_VERSION: =!"
-        goto VersionFound
+        if not defined APP_VERSION (
+            set "APP_VERSION=%%i"
+            REM 移除所有空格
+            set "APP_VERSION=!APP_VERSION: =!"
+        )
     )
-    :VersionFound
     REM 验证版本号是否有效
     if "!APP_VERSION!"=="" (
         echo 警告：version.txt文件内容为空，使用默认版本 !DEFAULT_VERSION!
