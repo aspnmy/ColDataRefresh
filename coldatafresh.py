@@ -427,7 +427,7 @@ class Dashboard:
     def _render_header(self) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
-        header = self.terminal.colored_text(f" SSD掉速激活-冷数据维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：{qqun} Url: {url}", bg=44)
+        header = self.terminal.colored_text(f" SSD掉速激活-冷数据维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：{qqun} Url: https://{url}", bg=44)
         
         # 打印主标题
         print(self._safe_print(f"\n{h_line}\n{header:^70}"))
@@ -464,6 +464,7 @@ class Dashboard:
         
         info_lines = [
             f"智能检测固态硬盘的冷数据并解决冷数据掉速问题。",
+            f"GitHub:https://github.com/aspnmy/ColDataRefresh.git",
             f"工作路径: {self.working_directory or os.getcwd()}  ",
             f"操作模式: {self.terminal.colored_text(mode_text, fg=32)}  ",
             f"数据时效: {self.min_days} 天, 跳过小文件: {'是' if self.skip_small else '否'}  ",
@@ -865,21 +866,38 @@ class ApplicationController:
             
             LogManager.log_operation(f"用户选择操作模式: {mode_name}")
         
-        # 根据不同模式显示相应的警告
+        # 根据不同模式显示相应的警告和确认提示
         if full_refresh:
             print("⚠️  警告: 正在使用全盘数据刷新模式！")
+            print("   使用此模式将完全擦除SSD硬盘中的数据，所有文件内容将丢失且无法找回！")
             print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值")
             print("   此操作不可撤销，请确保您了解操作后果！")
-            # 要求用户确认
-            confirm = input("请输入 'YES' 确认执行全盘刷新操作: ")
-            if confirm != 'YES':
+            
+            # 要求用户确认两次
+            confirm1 = input("请输入 'yes' 确认执行全盘刷新操作 (第一次): ").strip().lower()
+            if confirm1 != 'yes':
                 print("操作已取消")
                 return
+            
+            confirm2 = input("请再次输入 'yes' 确认执行全盘刷新操作 (第二次): ").strip().lower()
+            if confirm2 != 'yes':
+                print("操作已取消")
+                return
+                
+            LogManager.log_operation("用户已确认两次，开始执行全盘刷新操作")
         elif trim_mode:
-            print("ℹ️  信息: 正在使用TRIM模式")
+            print("⚠️  警告: 正在使用TRIM优化模式！")
+            print("   如需找回SSD中删除的数据请不要使用此模式，先找回数据以后再使用！")
             print(f"   通知SSD哪些数据块是无效的，提高写入性能、减少耗损")
             print(f"   针对文件前 {config.TRIM_BLOCK_SIZE/1024**2:.1f}MB 区域执行TRIM操作")
-            print(f"   支持固态硬盘及叠瓦式机械硬盘，可延长设备寿命")
+            
+            # 要求用户确认一次
+            confirm = input("请输入 'yes' 确认执行TRIM优化操作: ").strip().lower()
+            if confirm != 'yes':
+                print("操作已取消")
+                return
+                
+            LogManager.log_operation("用户已确认，开始执行TRIM优化操作")
         
         directory = input("扫描目录: ").strip('"').replace('：', ':')  # 中文冒号转英文冒号
         # 自动添加反斜杠如果用户没有输入
