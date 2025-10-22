@@ -25,10 +25,12 @@ def set_window_title(title: str = "冷数据维护工具 v4.3") -> None:
 # ============================== 系统配置模块 ==============================
 @dataclass(frozen=True)
 class Config:
-    # 日志文件使用绝对路径，确保在exe运行时能正确保存
-    LOG_FILE: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "refresh_log.json")
-    CORRUPTED_LOG: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "corrupted_files.log")
-    ERROR_LOG: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "error.log")
+    # 获取脚本所在目录
+    SCRIPT_DIR: str = os.path.dirname(os.path.abspath(__file__))
+    # 日志文件保存在脚本同级目录下
+    LOG_FILE: str = os.path.join(SCRIPT_DIR, "refresh_log.json")
+    CORRUPTED_LOG: str = os.path.join(SCRIPT_DIR, "corrupted_files.log")
+    ERROR_LOG: str = os.path.join(SCRIPT_DIR, "error.log")
     BUFFER_SIZE: int = 4 * 1024
     MAX_RETRIES: int = 3
     LARGE_FILE: int = 100 * 1024**2      # 100MB以上为大文件
@@ -44,6 +46,23 @@ class FileCategory(Enum):
     LARGE = auto()
 
 config = Config()
+
+# ============================== 数据模型模块 ==============================
+class LogData(TypedDict):
+    pending: list[str]
+    completed: list[str]
+    corrupted: list[str]
+
+@dataclass
+class OperationStats:
+    scanned: int = 0       # 已扫描文件总数
+    processed: int = 0    # 已处理文件数
+    large: int = 0
+    medium: int = 0
+    small: int = 0
+    corrupted: int = 0
+    speed: float = 0.0
+    progress: float = 0.0  # 总体进度百分比
 
 # ============================== 日志管理模块 ==============================
 class LogManager:
@@ -159,23 +178,6 @@ class LogManager:
 # 初始化日志管理器，确保日志目录存在
 LogManager.ensure_log_directory()
 
-# ============================== 数据模型模块 ==============================
-class LogData(TypedDict):
-    pending: list[str]
-    completed: list[str]
-    corrupted: list[str]
-
-@dataclass
-class OperationStats:
-    scanned: int = 0       # 已扫描文件总数
-    processed: int = 0    # 已处理文件数
-    large: int = 0
-    medium: int = 0
-    small: int = 0
-    corrupted: int = 0
-    speed: float = 0.0
-    progress: float = 0.0  # 总体进度百分比
-
 # ============================== 终端控制模块 ==============================
 class TerminalManager:
     _instance = None
@@ -245,7 +247,7 @@ class Dashboard:
     def _render_header(self) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
-        header = self.terminal.colored_text(" SSD冷数据维护系统 v4.3.2 作者:aspnmy By Python3.12.3 ", bg=44)
+        header = self.terminal.colored_text(" SSD掉速激活-冷数据刷新维护系统 v4.3.3 作者:support@e2bank.cn By Python3.12.3 QQ群：115405294", bg=44)
         print(self._safe_print(f"\n{h_line}\n{header:^70}\n{h_line}"))
 
     def _render_stats(self, stats: OperationStats, phase: str) -> None:
@@ -604,12 +606,17 @@ class Benchmark:
                 dashboard.update_display(stats, "基准测试中")
             
             end_time = time.time()
+            duration = end_time - start_time
+            stats.speed = stats.speed if stats.speed > 0 else 0.0  # 确保速度有有效值
+            
+            # 保存操作摘要到日志文件
+            LogManager.save_operation_summary(stats, duration)
             
             # 记录结果
             result = {
                 "iteration": i + 1,
                 "total_files": total_files,
-                "total_time": end_time - start_time,
+                "total_time": duration,
                 "avg_speed_mb_s": stats.speed,
                 "files_processed": stats.processed,
                 "corrupted_files": stats.corrupted,

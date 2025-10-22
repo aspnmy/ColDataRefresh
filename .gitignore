@@ -202,7 +202,7 @@ $RECYCLE.BIN/
 build/
 
 dist/
-
+test_data/
 # Python
 *.egg-info/
 *.egg/
