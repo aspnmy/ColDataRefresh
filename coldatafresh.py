@@ -980,13 +980,34 @@ class ApplicationController:
             print(f"操作摘要: {log_file_path}")
         
         # 记录操作完成
-            if full_refresh:
-                mode = "全盘刷新"
-            elif trim_mode:
-                mode = "TRIM模式"
+        if full_refresh:
+            mode = "全盘刷新"
+        elif trim_mode:
+            mode = "TRIM模式"
+        else:
+            mode = "常规刷新"
+        LogManager.log_operation(f"操作完成 ({mode}): 扫描{self.stats.scanned}个文件, 处理{self.stats.processed}个, 损坏{self.stats.corrupted}个, 耗时{elapsed_time:.2f}秒")
+        
+        # 显示交互菜单
+        while True:
+            print("\n" + "="*50)
+            print("          冷数据维护工具 - 操作完成")
+            print("="*50)
+            print("1. 返回 - 回到交互界面")
+            print("2. 退出 - 关闭脚本")
+            print("="*50)
+            
+            choice = input("请选择操作 [1/2]: ").strip()
+            if choice == '1':
+                # 返回主界面，重新执行
+                return self.execute(full_refresh, trim_mode)
+            elif choice == '2':
+                # 退出程序
+                print("感谢使用冷数据维护工具，再见！")
+                LogManager.log_operation("用户选择退出程序")
+                sys.exit(0)
             else:
-                mode = "常规刷新"
-            LogManager.log_operation(f"操作完成 ({mode}): 扫描{self.stats.scanned}个文件, 处理{self.stats.processed}个, 损坏{self.stats.corrupted}个, 耗时{elapsed_time:.2f}秒")
+                print("无效的选择，请输入 1 或 2")
 
 # ============================== 基准测试模块 ==============================
 class Benchmark:
