@@ -99,7 +99,7 @@ class Config:
     MAX_WORKERS: int = 4                  # 最大线程数
     MEMORY_LIMIT_MB: int = 512            # 内存限制(MB)
     FULL_REFRESH_MODE: bool = False       # 全盘数据刷新模式标志
-    FULL_REFRESH_PATTERN: bytes = b'\x66'  # 全盘刷新时写入的填充值（66值）
+    FULL_REFRESH_PATTERN: bytes = b'\xFF'  # 全盘刷新时写入的填充值（FF值）
     TRIM_MODE: bool = False               # TRIM模式标志
     TRIM_BLOCK_SIZE: int = 1 * 1024**2    # TRIM操作的块大小（1MB）
 
@@ -315,7 +315,7 @@ class Dashboard:
     def _render_header(self) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
-        header = self.terminal.colored_text(" SSD掉速激活-冷数据刷新维护系统 v4.3.3 作者:support@e2bank.cn By Python3.12.3 QQ群：115405294", bg=44)
+        header = self.terminal.colored_text(f" SSD掉速激活-冷数据刷新维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：115405294", bg=44)
         print(self._safe_print(f"\n{h_line}\n{header:^70}\n{h_line}"))
 
     def _render_stats(self, stats: OperationStats, phase: str) -> None:
