@@ -17,7 +17,13 @@ from types import FrameType
 from enum import Enum, auto
 import json
 import platform
-import requests
+
+# 尝试导入requests模块，如果不可用则设置标志
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 # 读取版本号
 VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt')
@@ -257,17 +263,20 @@ def getWebSite():
     remote_url = "https://raw.githubusercontent.com/aspnmy/ColDataRefresh/refs/heads/master/WebSite.json"
     
     # 步骤1：尝试从远程获取并更新本地文件
-    try:
-        response = requests.get(remote_url, timeout=5)
-        response.raise_for_status()
-        
-        # 将远程内容保存到本地文件
-        with open(local_website_file, 'w', encoding='utf-8') as f:
-            f.write(response.text)
-        LogManager.log_operation(f"已更新本地WebSite.json文件", "INFO")
-    except Exception as e:
-        # 远程获取失败时记录日志但不中断流程
-        LogManager.log_operation(f"更新本地WebSite.json失败: {e}", "WARNING")
+    if HAS_REQUESTS:
+        try:
+            response = requests.get(remote_url, timeout=5)
+            response.raise_for_status()
+            
+            # 将远程内容保存到本地文件
+            with open(local_website_file, 'w', encoding='utf-8') as f:
+                f.write(response.text)
+            LogManager.log_operation(f"已更新本地WebSite.json文件", "INFO")
+        except Exception as e:
+            # 远程获取失败时记录日志但不中断流程
+            LogManager.log_operation(f"更新本地WebSite.json失败: {e}", "WARNING")
+    else:
+        LogManager.log_operation("未安装requests模块，跳过远程更新", "WARNING")
     
     # 步骤2：尝试从本地文件读取信息
     try:
@@ -288,6 +297,11 @@ def check_latest_version():
     检查GitHub上的最新版本号
     返回：最新版本号字符串，如果检查失败返回None
     """
+    # 检查是否有requests模块
+    if not HAS_REQUESTS:
+        LogManager.log_operation("未安装requests模块，跳过版本检查", "WARNING")
+        return None
+        
     try:
         releases_url = "https://api.github.com/repos/aspnmy/ColDataRefresh/releases/latest"
         response = requests.get(releases_url, timeout=5)
