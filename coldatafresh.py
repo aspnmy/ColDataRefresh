@@ -247,19 +247,41 @@ LogManager.ensure_log_directory()
 # 从GitHub获取网站信息
 def getWebSite():
     """
-    从GitHub仓库获取网站信息（QQ群和URL）
-    如果获取失败，返回默认值
+    从GitHub仓库获取网站信息（QQ群和URL）的更新流程：
+    1. 尝试从远程获取并更新本地WebSite.json文件
+    2. 从本地WebSite.json文件读取信息
+    3. 如果上述步骤失败，返回默认值
     """
+    # 定义本地WebSite.json文件路径
+    local_website_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'WebSite.json')
+    remote_url = "https://raw.githubusercontent.com/aspnmy/ColDataRefresh/refs/heads/master/WebSite.json"
+    
+    # 步骤1：尝试从远程获取并更新本地文件
     try:
-        url = "https://raw.githubusercontent.com/aspnmy/ColDataRefresh/refs/heads/master/WebSite.json"
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()  # 检查响应状态
-        data = response.json()
-        return data.get('qqun', '115405294'), data.get('url', 'https://github.com/aspnmy/ColDataRefresh')
+        response = requests.get(remote_url, timeout=5)
+        response.raise_for_status()
+        
+        # 将远程内容保存到本地文件
+        with open(local_website_file, 'w', encoding='utf-8') as f:
+            f.write(response.text)
+        LogManager.log_operation(f"已更新本地WebSite.json文件", "INFO")
     except Exception as e:
-        # 获取失败时返回默认值
-        LogManager.log_operation(f"获取网站信息失败: {e}", "WARNING")
-        return "115405294", "https://github.com/aspnmy/ColDataRefresh"
+        # 远程获取失败时记录日志但不中断流程
+        LogManager.log_operation(f"更新本地WebSite.json失败: {e}", "WARNING")
+    
+    # 步骤2：尝试从本地文件读取信息
+    try:
+        if os.path.exists(local_website_file):
+            with open(local_website_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                LogManager.log_operation(f"从本地WebSite.json读取信息成功", "INFO")
+                return data.get('qqun', '115405294'), data.get('url', 'https://github.com/aspnmy/ColDataRefresh')
+    except Exception as e:
+        LogManager.log_operation(f"读取本地WebSite.json失败: {e}", "ERROR")
+    
+    # 步骤3：如果所有尝试都失败，返回默认值
+    LogManager.log_operation("无法获取网站信息，使用默认值", "WARNING")
+    return "115405294", "https://github.com/aspnmy/ColDataRefresh"
 
 # 获取QQ群和URL常量
 qqun, url = getWebSite()
