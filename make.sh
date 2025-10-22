@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # 从version.txt读取版本号
-DEFAULT_VERSION="4.3.2"
+DEFAULT_VERSION="4.3.3"
 if [ -f "version.txt" ]; then
     APP_VERSION=$(cat version.txt | tr -d ' ')
 else

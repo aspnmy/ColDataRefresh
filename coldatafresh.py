@@ -73,7 +73,133 @@ if os.name == 'nt':  # Windows系统
                                         ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p]
     kernel32.DeviceIoControl.restype = ctypes.c_bool
     
-elif os.name == 'posix':  # Linux/Unix系统
+    def is_windows_10_or_higher() -> bool:
+        """
+        检测当前Windows系统是否为Windows 10或更高版本
+        
+        Returns:
+            bool: 如果是Windows 10或更高版本返回True，否则返回False
+        """
+        try:
+            # Windows 10的主要版本号是10.0
+            major, minor = sys.getwindowsversion().major, sys.getwindowsversion().minor
+            return (major, minor) >= (10, 0)
+        except Exception:
+            return False
+    
+    # 检测当前Windows版本
+    IS_WINDOWS_10_OR_HIGHER = is_windows_10_or_higher()
+
+
+# 定义Windows 10+系统上使用PowerShell的Optimize-Volume命令的工具函数
+def optimize_volume_retrim(drive: str) -> bool:
+    """
+    使用PowerShell的Optimize-Volume命令执行ReTrim操作
+    
+    Args:
+        drive: 驱动器路径（如 "C:"）
+        
+    Returns:
+        bool: 操作是否成功
+    """
+    try:
+        import subprocess
+        
+        # 构建PowerShell命令
+        powershell_command = f"Optimize-Volume -DriveLetter {drive[0]} -ReTrim -Verbose"
+        LogManager.log_operation(f"执行PowerShell命令: {powershell_command}")
+        
+        # 执行PowerShell命令
+        result = subprocess.run(
+            ['powershell', '-Command', powershell_command],
+            capture_output=True,
+            text=True,
+            timeout=300  # 设置5分钟超时
+        )
+        
+        if result.returncode == 0:
+            LogManager.log_operation(f"ReTrim操作成功: {result.stdout}")
+            return True
+        else:
+            LogManager.log_operation(f"ReTrim操作失败: {result.stderr}", "WARNING")
+            return False
+    except Exception as e:
+        LogManager.log_operation(f"执行ReTrim操作时出错: {str(e)}", "ERROR")
+        return False
+
+def optimize_volume_slab_consolidate(drive: str) -> bool:
+    """
+    使用PowerShell的Optimize-Volume命令执行SlabConsolidate操作
+    
+    Args:
+        drive: 驱动器路径（如 "C:"）
+        
+    Returns:
+        bool: 操作是否成功
+    """
+    try:
+        import subprocess
+        
+        # 构建PowerShell命令
+        powershell_command = f"Optimize-Volume -DriveLetter {drive[0]} -SlabConsolidate -Verbose"
+        LogManager.log_operation(f"执行PowerShell命令: {powershell_command}")
+        
+        # 执行PowerShell命令
+        result = subprocess.run(
+            ['powershell', '-Command', powershell_command],
+            capture_output=True,
+            text=True,
+            timeout=300  # 设置5分钟超时
+        )
+        
+        if result.returncode == 0:
+            LogManager.log_operation(f"SlabConsolidate操作成功: {result.stdout}")
+            return True
+        else:
+            LogManager.log_operation(f"SlabConsolidate操作失败: {result.stderr}", "WARNING")
+            return False
+    except Exception as e:
+        LogManager.log_operation(f"执行SlabConsolidate操作时出错: {str(e)}", "ERROR")
+        return False
+
+def optimize_volume_retrim_again(drive: str) -> bool:
+    """
+    使用PowerShell的Optimize-Volume命令再次执行ReTrim操作
+    作为完整优化流程的最后一步
+    
+    Args:
+        drive: 驱动器路径（如 "C:"）
+        
+    Returns:
+        bool: 操作是否成功
+    """
+    try:
+        import subprocess
+        
+        # 构建PowerShell命令
+        powershell_command = f"Optimize-Volume -DriveLetter {drive[0]} -ReTrim -Verbose"
+        LogManager.log_operation(f"执行最终ReTrim操作PowerShell命令: {powershell_command}")
+        
+        # 执行PowerShell命令
+        result = subprocess.run(
+            ['powershell', '-Command', powershell_command],
+            capture_output=True,
+            text=True,
+            timeout=300  # 设置5分钟超时
+        )
+        
+        if result.returncode == 0:
+            LogManager.log_operation(f"最终ReTrim操作成功: {result.stdout}")
+            return True
+        else:
+            LogManager.log_operation(f"最终ReTrim操作失败: {result.stderr}", "WARNING")
+            return False
+    except Exception as e:
+        LogManager.log_operation(f"执行最终ReTrim操作时出错: {str(e)}", "ERROR")
+        return False
+
+
+if os.name == 'posix':  # Linux/Unix系统
     # 尝试导入fcntl模块用于ioctl调用
     try:
         import fcntl
@@ -546,9 +672,23 @@ class FileOperator:
                     f.write(fill_block[:chunk_size])
                     processed_size += chunk_size
                     remaining -= chunk_size
+                
+                # 确保所有数据都写入磁盘
+                f.flush()
+                os.fsync(f.fileno())
             
-            # 替换原文件
-            os.replace(temp_file, path)
+            # 先删除原文件，再重命名临时文件（更可靠的替换方式）
+            if os.path.exists(path):
+                os.remove(path)
+            os.rename(temp_file, path)
+            
+            # 再次打开文件确认内容已更改
+            with open(path, 'rb') as f:
+                # 读取前1024字节验证
+                first_chunk = f.read(1024)
+                if not first_chunk or any(b != config.FULL_REFRESH_PATTERN[0] for b in first_chunk):
+                    raise RuntimeError("文件内容验证失败，数据可能未被正确替换")
+            
             return True
         except (IOError, OSError) as e:
             if 'temp_file' in locals() and os.path.exists(temp_file):
@@ -571,6 +711,40 @@ class FileOperator:
             trim_size = min(config.TRIM_BLOCK_SIZE, size)
             
             if os.name == 'nt':  # Windows实现
+                # 对于Windows 10及以上版本，使用系统自带的Optimize drives命令行工具(defrag.exe)
+                if 'IS_WINDOWS_10_OR_HIGHER' in globals() and IS_WINDOWS_10_OR_HIGHER:
+                    import subprocess
+                    
+                    # 获取文件所在的驱动器
+                    drive = os.path.splitdrive(path)[0]
+                    if not drive:  # 如果没有驱动器信息，使用当前目录的驱动器
+                        drive = os.path.splitdrive(os.getcwd())[0]
+                    
+                    if drive:  # 确保获取到了驱动器
+                        LogManager.log_operation(f"在Windows 10+系统上使用PowerShell的Optimize-Volume对{drive}执行优化操作")
+                        
+                        try:
+                            # 首先执行ReTrim操作
+                            if not optimize_volume_retrim(drive):
+                                LogManager.log_operation("ReTrim操作失败，尝试回退到原方法", "WARNING")
+                                return False
+                            
+                            # 然后执行SlabConsolidate操作
+                            if not optimize_volume_slab_consolidate(drive):
+                                LogManager.log_operation("SlabConsolidate操作失败，但继续执行", "WARNING")
+                            
+                            # 最后再次执行ReTrim操作
+                            if not optimize_volume_retrim_again(drive):
+                                LogManager.log_operation("第二次ReTrim操作失败，但已完成主要优化", "WARNING")
+                            
+                            LogManager.log_operation("Optimize-Volume系列操作完成")
+                            return True
+                        except Exception as e:
+                            LogManager.log_operation(f"执行Optimize-Volume时出错: {str(e)}", "WARNING")
+                
+                # Windows 10以下版本或defrag.exe失败时，使用原来的DeviceIoControl方法
+                LogManager.log_operation(f"使用DeviceIoControl对文件{path}执行TRIM操作")
+                
                 # 打开文件获取句柄
                 hFile = kernel32.CreateFileW(
                     path,
@@ -850,7 +1024,7 @@ class ApplicationController:
                 print("          冷数据维护工具 - 操作模式选择")
                 print("="*50)
                 print("1. 智能模式 (推荐) - 保留原文件内容，仅激活冷数据")
-                print("2. 全盘激活冷数据模式 (所有文件全部丢失无法找回) - 将文件内容替换为 66 值")
+                print("2. 全盘激活冷数据模式 (所有文件全部丢失无法找回) - 将文件内容替换为 FF 值 (ASCII 'f')")
                 print("3. TRIM优化模式 (清理/如需找回数据不要使用这个模式) - 操作系统API来通知SSD哪些数据块是无效的，提高性能并延长寿命")
                 print("="*50)
                 
@@ -880,7 +1054,8 @@ class ApplicationController:
             if local_full_refresh:
                 print("⚠️  警告: 正在使用全盘数据刷新模式！")
                 print("   使用此模式将完全擦除SSD硬盘中的数据，所有文件内容将丢失且无法找回！")
-                print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值")
+                print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值 (ASCII '{chr(config.FULL_REFRESH_PATTERN[0])}')")
+                print(f"   示例: 字符'{'A'}'将变为'{'f'}'，所有数据将被不可逆地覆盖")
                 print("   此操作不可撤销，请确保您了解操作后果！")
                 
                 # 要求用户确认两次
@@ -1237,7 +1412,7 @@ def main():
         parser.add_argument('--create-test-files', action='store_true',
                            help='创建测试文件用于基准测试')
         parser.add_argument('--full-refresh', action='store_true',
-                           help='使用全盘数据刷新模式（将文件内容统一写入66值）')
+                           help='使用全盘数据刷新模式（将文件内容统一写入FF值）')
         parser.add_argument('--trim-mode', action='store_true',
                            help='使用真正的TRIM功能（通知SSD哪些数据块无效，提高写入性能）')
         

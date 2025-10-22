@@ -3,13 +3,26 @@ setlocal enabledelayedexpansion
 
 REM 保存当前目录并切换到脚本所在目录
 set "CURRENT_DIR=%cd%"
-cd /d "%~dp0"
+echo 当前目录: %CURRENT_DIR%
+
+REM 获取脚本所在目录的绝对路径
+set "SCRIPT_DIR=%~dp0"
+echo 脚本目录: %SCRIPT_DIR%
+
+cd /d "%SCRIPT_DIR%"
+echo 切换后目录: %cd%
 
 REM 从version.txt读取版本号
-set "DEFAULT_VERSION=4.3.2"
-if exist "version.txt" (
-    REM 使用更可靠的方式读取版本号，避免换行符和空格问题
-    for /f "usebackq tokens=1 delims=\r\n" %%i in ("version.txt") do (
+set "DEFAULT_VERSION=4.3.3"
+set "VERSION_FILE=%SCRIPT_DIR%version.txt"
+
+echo 尝试读取版本文件: %VERSION_FILE%
+
+REM 检查文件是否存在
+if exist "%VERSION_FILE%" (
+    echo 找到版本文件: %VERSION_FILE%
+    REM 使用绝对路径和更可靠的方式读取版本号
+    for /f "usebackq tokens=1 delims=\r\n" %%i in ("%VERSION_FILE%") do (
         set "APP_VERSION=%%i"
         REM 移除所有空格
         set "APP_VERSION=!APP_VERSION: =!"
@@ -20,15 +33,20 @@ if exist "version.txt" (
     if "!APP_VERSION!"=="" (
         echo 警告：version.txt文件内容为空，使用默认版本 !DEFAULT_VERSION!
         set "APP_VERSION=!DEFAULT_VERSION!"
+    ) else (
+        echo 成功从文件读取版本号: !APP_VERSION!
     )
 ) else (
+    echo 错误：在路径 %VERSION_FILE% 未找到version.txt文件
     set "APP_VERSION=!DEFAULT_VERSION!"
-    echo 警告：未找到version.txt文件，使用默认版本 !DEFAULT_VERSION!
-    echo !DEFAULT_VERSION! > version.txt
+    echo 使用默认版本 !DEFAULT_VERSION!
+    REM 尝试创建version.txt文件
+    echo !DEFAULT_VERSION! > "%VERSION_FILE%"
+    echo 已创建version.txt文件
 )
 
 REM 显示当前使用的版本号
- echo 当前版本号: !APP_VERSION!
+echo 当前版本号: !APP_VERSION!
 
 echo 正在构建冷数据维护工具 v!APP_VERSION!..
 
@@ -72,20 +90,20 @@ REM 使用Python -m方式运行pyinstaller，避免PATH环境变量问题
 echo 正在生成可执行文件...
 echo 使用Python模块方式调用pyinstaller...
 if exist "devrom.ico" (
-    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v!APP_VERSION! --icon=devrom.ico coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win --icon=devrom.ico coldatafresh.py
 ) else (
-    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v!APP_VERSION! coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win coldatafresh.py
 )
 
 if !errorlevel! equ 0 (
-    echo 构建完成！可执行文件: dist\coldatafresh_v!APP_VERSION!.exe
+    echo 构建完成！可执行文件: dist\ColDataFresh_v!APP_VERSION!_win.exe
     echo 请以管理员权限运行生成的可执行文件
     
     REM 自动打包成zip文件
     echo 正在创建压缩文件...
     
     REM 使用PowerShell创建zip文件（Windows内置）
-    powershell -Command "try { Compress-Archive -Path 'dist\coldatafresh_v!APP_VERSION!.exe' -DestinationPath 'dist\coldatafresh_v!APP_VERSION!.zip' -Force; Write-Host '压缩文件创建成功: dist\coldatafresh_v!APP_VERSION!.zip' } catch { Write-Host '警告：压缩文件创建失败' }"
+    powershell -Command "try { Compress-Archive -Path 'dist\ColDataFresh_v!APP_VERSION!_win.exe' -DestinationPath 'dist\ColDataFresh_v!APP_VERSION!_win.zip' -Force; Write-Host '压缩文件创建成功: dist\ColDataFresh_v!APP_VERSION!_win.zip' } catch { Write-Host '警告：压缩文件创建失败' }"
     
     REM 可选：自动打开dist目录
     echo 正在打开输出目录...
