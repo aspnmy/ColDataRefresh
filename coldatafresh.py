@@ -923,16 +923,37 @@ class ApplicationController:
                 self.dashboard.trim_mode = local_trim_mode
                 break  # 确认成功，退出循环继续执行后续流程
 
+        # 获取目录输入
         directory = input("扫描目录: ").strip('"').replace('：', ':')  # 中文冒号转英文冒号
-        # 自动添加反斜杠如果用户没有输入
-        if directory and not directory.endswith(('\\', '/')):
-            directory += '\\'
         
-        min_days_input = input("数据时效(天): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
-        min_days = int(min_days_input) if min_days_input else 0
-        
-        skip_small_input = input("跳过小文件? (y/n): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
-        skip_small = skip_small_input.lower() == 'y'
+        # 根据不同模式设置参数
+        if local_trim_mode or local_full_refresh:
+            # TRIM模式或全盘刷新模式：仅要求输入路径/盘符，其他参数使用默认值
+            print("自动设置参数...")
+            # 对于Windows盘符，确保格式正确
+            if os.name == 'nt' and len(directory) > 1 and directory[1] == ':' and not directory.endswith('\\'):
+                directory += '\\'
+            # 对于Linux路径，确保格式正确
+            elif os.name == 'posix' and directory and not directory.endswith('/'):
+                directory += '/'
+            
+            min_days = 0  # 处理所有文件，不按时效过滤
+            skip_small = False  # 不跳过小文件
+            
+            print(f"路径: {directory}")
+            print(f"数据时效: {min_days} 天 (自动设置)")
+            print(f"跳过小文件: {'是' if skip_small else '否'} (自动设置)")
+        else:
+            # 常规模式：保持原有输入流程
+            # 自动添加反斜杠如果用户没有输入
+            if directory and not directory.endswith(('\\', '/')):
+                directory += '\\'
+            
+            min_days_input = input("数据时效(天): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
+            min_days = int(min_days_input) if min_days_input else 0
+            
+            skip_small_input = input("跳过小文件? (y/n): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
+            skip_small = skip_small_input.lower() == 'y'
         
         # 将用户输入的参数保存到dashboard中
         self.dashboard.working_directory = directory

@@ -67,6 +67,12 @@ if !errorlevel! equ 0 (
     echo 构建完成！可执行文件: dist\coldatafresh_v!APP_VERSION!.exe
     echo 请以管理员权限运行生成的可执行文件
     
+    REM 自动打包成zip文件
+    echo 正在创建压缩文件...
+    
+    REM 使用PowerShell创建zip文件（Windows内置）
+    powershell -Command "try { Compress-Archive -Path 'dist\coldatafresh_v!APP_VERSION!.exe' -DestinationPath 'dist\coldatafresh_v!APP_VERSION!.zip' -Force; Write-Host '压缩文件创建成功: dist\coldatafresh_v!APP_VERSION!.zip' } catch { Write-Host '警告：压缩文件创建失败' }"
+    
     REM 可选：自动打开dist目录
     echo 正在打开输出目录...
     start dist

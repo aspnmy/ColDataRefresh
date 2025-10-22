@@ -12,6 +12,19 @@
         "corrupted": 0,
         "final_speed": 0.0
       }
+    },
+    {
+      "timestamp": "2025-10-22T08:01:51.532848",
+      "duration_seconds": 0.01,
+      "stats": {
+        "scanned": 0,
+        "processed": 0,
+        "large": 0,
+        "medium": 0,
+        "small": 0,
+        "corrupted": 0,
+        "final_speed": 0.0
+      }
     }
   ],
   "total_scanned": 0,
