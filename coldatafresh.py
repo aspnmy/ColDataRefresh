@@ -1168,8 +1168,8 @@ class ApplicationController:
                     processed_count += 1
                     continue
                 
-                # 提交任务到线程池
-                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, full_refresh, trim_mode)
+                # 提交任务到线程池 - 使用用户选择的本地模式变量
+                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, local_full_refresh, local_trim_mode)
                 futures.append(future)
                 
                 # 内存控制：限制同时运行的任务数量
