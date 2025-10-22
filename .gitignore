@@ -82,6 +82,8 @@ build/
 develop-eggs/
 dist/
 downloads/
+bindd/
+bin/
 eggs/
 .eggs/
 lib/
@@ -179,7 +181,7 @@ cython_debug/
 
 # VS Code
 .vscode/
-
+*.code-workspace
 # Windows
 Thumbs.db
 ehthumbs.db
@@ -200,7 +202,7 @@ $RECYCLE.BIN/
 *.lnk
 
 build/
-
+bin/
 dist/
 test_data/
 # Python

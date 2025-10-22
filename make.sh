@@ -75,13 +75,13 @@ echo "使用Python模块方式调用pyinstaller..."
 
 # 在Linux上构建，不使用--uac-admin参数
 if [ -f "devrom.ico" ]; then
-    $PYTHON_CMD -m PyInstaller --onefile --name coldatafresh_v"$APP_VERSION"_linux --icon=devrom.ico coldatafresh.py
+    $PYTHON_CMD -m PyInstaller --onefile --name ColDataFresh_v"$APP_VERSION"_linux --icon=devrom.ico coldatafresh.py
 else
-    $PYTHON_CMD -m PyInstaller --onefile --name coldatafresh_v"$APP_VERSION"_linux coldatafresh.py
+    $PYTHON_CMD -m PyInstaller --onefile --name ColDataFresh_v"$APP_VERSION"_linux coldatafresh.py
 fi
 
 if [ $? -eq 0 ]; then
-    echo "构建完成！可执行文件: dist/coldatafresh_v${APP_VERSION}_linux"
+    echo "构建完成！可执行文件: dist/ColDataFresh_v${APP_VERSION}_linux"
     echo "请以管理员权限运行生成的可执行文件"
     
     # 自动打包成zip文件
@@ -105,9 +105,10 @@ if [ $? -eq 0 ]; then
     # 检查7-zip是否可用
     if [ -f "$SEVEN_ZIP_PATH" ]; then
         cd dist
-        ZIP_FILE="coldatafresh_v${APP_VERSION}_linux.zip"
+        ZIP_FILE="ColDataFresh_v${APP_VERSION}_linux.zip"
         # 使用7-zip创建zip文件
-        "$SEVEN_ZIP_PATH" a "$ZIP_FILE" coldatafresh_v${APP_VERSION}_linux
+        # $SCRIPT_DIR/bin/7zz a "$ZIP_FILE" ColDataFresh_v${APP_VERSION}_linux
+        "$SEVEN_ZIP_PATH" a "$ZIP_FILE" ColDataFresh_v${APP_VERSION}_linux
         if [ $? -eq 0 ]; then
             echo "压缩文件创建成功: dist/$ZIP_FILE"
         else
