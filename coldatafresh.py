@@ -17,6 +17,7 @@ from types import FrameType
 from enum import Enum, auto
 import json
 import platform
+import requests
 
 # 读取版本号
 VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt')
@@ -33,6 +34,8 @@ def get_version():
 
 # 获取当前版本
 CURRENT_VERSION = get_version()
+
+
 
 # 定义TRIM相关的常量和结构
 if os.name == 'nt':  # Windows系统
@@ -241,6 +244,26 @@ class LogManager:
 # 初始化日志管理器，确保日志目录存在
 LogManager.ensure_log_directory()
 
+# 从GitHub获取网站信息
+def getWebSite():
+    """
+    从GitHub仓库获取网站信息（QQ群和URL）
+    如果获取失败，返回默认值
+    """
+    try:
+        url = "https://raw.githubusercontent.com/aspnmy/ColDataRefresh/refs/heads/master/WebSite.json"
+        response = requests.get(url, timeout=5)
+        response.raise_for_status()  # 检查响应状态
+        data = response.json()
+        return data.get('qqun', '115405294'), data.get('url', 'https://github.com/aspnmy/ColDataRefresh')
+    except Exception as e:
+        # 获取失败时返回默认值
+        LogManager.log_operation(f"获取网站信息失败: {e}", "WARNING")
+        return "115405294", "https://github.com/aspnmy/ColDataRefresh"
+
+# 获取QQ群和URL常量
+qqun, url = getWebSite()
+
 # ============================== 终端控制模块 ==============================
 class TerminalManager:
     _instance = None
@@ -315,7 +338,7 @@ class Dashboard:
     def _render_header(self) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
-        header = self.terminal.colored_text(f" SSD掉速激活-冷数据刷新维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：115405294", bg=44)
+        header = self.terminal.colored_text(f" SSD掉速激活-冷数据维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：{qqun} Url: {url}", bg=44)
         print(self._safe_print(f"\n{h_line}\n{header:^70}\n{h_line}"))
 
     def _render_stats(self, stats: OperationStats, phase: str) -> None:
