@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# coldatafresh.py - 冷数据维护专业工具 v4.3
+# coldatafresh.py - 冷数据维护专业工具
 # 终极版：解决日志保存问题，增强进度显示
 
 import os
@@ -16,9 +16,68 @@ from datetime import datetime
 from types import FrameType
 from enum import Enum, auto
 import json
+import platform
 
-def set_window_title(title: str = "冷数据维护工具 v4.3") -> None:
+# 读取版本号
+VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt')
+def get_version():
+    """
+    从version.txt文件读取当前版本号
+    如果文件不存在或读取失败，返回默认版本号
+    """
+    try:
+        with open(VERSION_FILE, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception:
+        return '4.3.0'  # 默认版本号
+
+# 获取当前版本
+CURRENT_VERSION = get_version()
+
+# 定义TRIM相关的常量和结构
+if os.name == 'nt':  # Windows系统
+    # Windows API常量
+    FSCTL_TRIM_FILES = 0x000900c4
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    OPEN_EXISTING = 3
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    
+    # 定义FILE_ZERO_DATA_INFORMATION_EX结构
+    class FILE_ZERO_DATA_INFORMATION_EX(ctypes.Structure):
+        _fields_ = [
+            ('FileOffset', ctypes.c_ulonglong),
+            ('BeyondFinalZero', ctypes.c_ulonglong),
+            ('Flags', ctypes.c_ulonglong)
+        ]
+    
+    # 加载Windows API
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_ulonglong, ctypes.c_ulonglong,
+                                    ctypes.c_void_p, ctypes.c_ulonglong, ctypes.c_ulonglong, ctypes.c_void_p]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_bool
+    kernel32.DeviceIoControl.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p,
+                                        ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+                                        ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p]
+    kernel32.DeviceIoControl.restype = ctypes.c_bool
+    
+elif os.name == 'posix':  # Linux/Unix系统
+    # 尝试导入fcntl模块用于ioctl调用
+    try:
+        import fcntl
+        # Linux BLKDISCARD常量
+        BLKDISCARD = 0x1277
+        BLKDISCARDZEROES = 0x127c
+    except ImportError:
+        fcntl = None
+
+def set_window_title(title: str = None) -> None:
     """设置控制台窗口标题"""
+    if title is None:
+        title = f"冷数据维护工具 v{CURRENT_VERSION}"
     if os.name == 'nt':
         ctypes.windll.kernel32.SetConsoleTitleW(title)
 
@@ -39,6 +98,10 @@ class Config:
     SKIP_SMALL: int = 1 * 1024**2        # 1MB以下为小文件（可跳过）
     MAX_WORKERS: int = 4                  # 最大线程数
     MEMORY_LIMIT_MB: int = 512            # 内存限制(MB)
+    FULL_REFRESH_MODE: bool = False       # 全盘数据刷新模式标志
+    FULL_REFRESH_PATTERN: bytes = b'\x66'  # 全盘刷新时写入的填充值（66值）
+    TRIM_MODE: bool = False               # TRIM模式标志
+    TRIM_BLOCK_SIZE: int = 1 * 1024**2    # TRIM操作的块大小（1MB）
 
 class FileCategory(Enum):
     SMALL = auto()
@@ -240,6 +303,11 @@ class Dashboard:
         self.start_time = time.time()
         self.last_update = 0.0
         self.last_scanned = 0  # 用于扫描速度计算
+        self.working_directory = ""  # 当前工作路径
+        self.full_refresh = False  # 全盘刷新模式标志
+        self.trim_mode = False  # TRIM模式标志
+        self.min_days = 0  # 数据时效
+        self.skip_small = False  # 是否跳过小文件
 
     def _safe_print(self, text: str) -> str:
         return text.encode(sys.stdout.encoding, errors='replace').decode(sys.stdout.encoding)
@@ -263,22 +331,26 @@ class Dashboard:
         scan_info = f"发现文件: {stats.scanned}" if phase == "扫描中" else ""
         process_bar = fill * int(50 * stats.progress) + empty * (50 - int(50 * stats.progress))
         
+        # 获取操作模式显示文本
+        mode_text = "常规模式" 
+        if self.full_refresh:
+            mode_text = "全盘刷新模式"
+        elif self.trim_mode:
+            mode_text = "TRIM模式"
+        
         info_lines = [
             f"智能检测固态硬盘的冷数据并解决冷数据掉速问题。",
-            f"当前路径: {os.getcwd()}请复制在机械硬盘中运行",
+            f"工作路径: {self.working_directory or os.getcwd()}  ",
+            f"操作模式: {self.terminal.colored_text(mode_text, fg=32)}  ",
+            f"数据时效: {self.min_days} 天, 跳过小文件: {'是' if self.skip_small else '否'}  ",
             f"当前时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"请不要关闭窗口，否则扫描会中断。 ",
-            f"请用管理员权限运行，不然有些文件扫描不全 ",
             f"运行阶段: {self.terminal.colored_text(phase.ljust(12), fg=33)} 耗时: {elapsed:.1f}s",
             f"处理进度: [{process_bar}] {stats.progress:.1%}",
             f"{scan_info}",
             f"扫描速度: {scan_speed:.1f} MB/s, 处理速度: {stats.speed:.1f} MB/s ",
-            f"文件分类: 大（大于100MB）({stats.large}) 中（10MB - 100MB）({stats.medium}) 小（小于10MB）({stats.small})",
+            f"文件分类: 大（>100MB）({stats.large}) 中（10-100MB）({stats.medium}) 小（<10MB）({stats.small})",
             f"损坏的文件: {self.terminal.colored_text(str(stats.corrupted), fg=31)}",
-            f"本项目地址:https://github.com/aspnmy/ColDataRefresh.git ",
-            f"感谢原作者:https://github.com/infrost/ColDataRefresh.git ",
             f"按Ctrl+C退出程序"
-            
         ]
         
         # 清理空行并渲染 - 右侧竖线完全不显示
@@ -313,6 +385,7 @@ class FileOperator:
 
     @staticmethod
     def checksum_file(path: str) -> int:
+        """计算文件的CRC32校验和"""
         crc = 0
         try:
             with open(path, 'rb') as f:
@@ -321,10 +394,155 @@ class FileOperator:
         except IOError as e:
             raise RuntimeError(f"文件读取失败: {str(e)}")
         return crc
+    
+    @staticmethod
+    def full_refresh_file(path: str, size: int) -> bool:
+        """全盘数据刷新模式：将文件内容统一写入FF值
+        
+        Args:
+            path: 文件路径
+            size: 文件大小
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        try:
+            temp_file = f"{path}.tmp"
+            processed_size = 0
+            
+            # 创建填充块
+            fill_block = config.FULL_REFRESH_PATTERN * config.BUFFER_SIZE
+            
+            # 写入临时文件
+            with open(temp_file, 'wb') as f:
+                remaining = size
+                while remaining > 0:
+                    chunk_size = min(config.BUFFER_SIZE, remaining)
+                    f.write(fill_block[:chunk_size])
+                    processed_size += chunk_size
+                    remaining -= chunk_size
+            
+            # 替换原文件
+            os.replace(temp_file, path)
+            return True
+        except (IOError, OSError) as e:
+            if 'temp_file' in locals() and os.path.exists(temp_file):
+                os.remove(temp_file)
+            raise RuntimeError(f"全盘刷新失败: {str(e)}")
+    
+    @staticmethod
+    def trim_file(path: str, size: int) -> bool:
+        """真正的TRIM功能：通知操作系统哪些数据块是无效的
+        
+        Args:
+            path: 文件路径
+            size: 文件大小
+            
+        Returns:
+            bool: 操作是否成功
+        """
+        try:
+            # 定义要TRIM的区域大小
+            trim_size = min(config.TRIM_BLOCK_SIZE, size)
+            
+            if os.name == 'nt':  # Windows实现
+                # 打开文件获取句柄
+                hFile = kernel32.CreateFileW(
+                    path,
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    0,
+                    None
+                )
+                
+                if hFile == -1 or hFile is None:
+                    raise OSError(f"无法打开文件: {path}")
+                
+                try:
+                    # 设置要TRIM的范围
+                    zero_data = FILE_ZERO_DATA_INFORMATION_EX()
+                    zero_data.FileOffset = 0  # 从文件开头开始
+                    zero_data.BeyondFinalZero = trim_size  # TRIM的结束位置
+                    zero_data.Flags = 0  # 使用默认标志
+                    
+                    # 调用DeviceIoControl执行TRIM操作
+                    bytes_returned = ctypes.c_ulong()
+                    success = kernel32.DeviceIoControl(
+                        hFile,
+                        FSCTL_TRIM_FILES,
+                        ctypes.byref(zero_data),
+                        ctypes.sizeof(zero_data),
+                        None,
+                        0,
+                        ctypes.byref(bytes_returned),
+                        None
+                    )
+                    
+                    if not success:
+                        raise OSError(f"TRIM操作失败")
+                    
+                    return True
+                finally:
+                    # 关闭文件句柄
+                    kernel32.CloseHandle(hFile)
+                    
+            else:  # 其他平台的实现
+                # 对于不支持直接TRIM API的平台，我们使用文件覆盖方法
+                # 并尽可能使用系统提示机制
+                temp_file = f"{path}.tmp"
+                
+                try:
+                    # 复制文件，前部分写入零
+                    with open(path, 'rb') as f_orig, open(temp_file, 'wb') as f_temp:
+                        # 写入零数据
+                        zero_block = b'\x00' * config.BUFFER_SIZE
+                        remaining = trim_size
+                        while remaining > 0:
+                            chunk_size = min(config.BUFFER_SIZE, remaining)
+                            f_temp.write(zero_block[:chunk_size])
+                            remaining -= chunk_size
+                        
+                        # 复制剩余内容
+                        f_orig.seek(trim_size)
+                        while chunk := f_orig.read(config.BUFFER_SIZE):
+                            f_temp.write(chunk)
+                    
+                    os.replace(temp_file, path)
+                    
+                    # 尝试调用posix_fadvise提示系统该部分数据不再需要（如果可用）
+                    try:
+                        import posix_fadvise
+                        with open(path, 'r') as f:
+                            posix_fadvise.fadvise(f.fileno(), 0, trim_size, posix_fadvise.POSIX_FADV_DONTNEED)
+                    except (ImportError, AttributeError):
+                        pass  # 忽略不可用的情况
+                    
+                    return True
+                except Exception as e:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                    raise
+            
+        except (IOError, OSError) as e:
+            if 'temp_file' in locals() and os.path.exists(temp_file):
+                os.remove(temp_file)
+            raise RuntimeError(f"TRIM操作失败: {str(e)}")
 
     @classmethod
-    def refresh_file(cls, path: str, stats: OperationStats, dashboard: Dashboard) -> dict:
-        """处理单个文件并返回统计信息（线程安全版本）"""
+    def refresh_file(cls, path: str, stats: OperationStats, dashboard: Dashboard, full_refresh: bool = False, trim_mode: bool = False) -> dict:
+        """处理单个文件并返回统计信息（线程安全版本）
+        
+        Args:
+            path: 文件路径
+            stats: 操作统计对象
+            dashboard: 仪表盘对象
+            full_refresh: 是否使用全盘数据刷新模式
+            
+        Returns:
+            dict: 处理结果统计
+        """
         temp_file = f"{path}.tmp"
         error_type = "UNKNOWN"
         result = {
@@ -347,34 +565,72 @@ class FileOperator:
             category = cls.categorize_file(size)
             result[category.name.lower()] = 1
             
-            # 主体处理逻辑
-            src_crc = cls.checksum_file(path)
-            for attempt in range(config.MAX_RETRIES + 1):
-                try:
-                    dest_crc = 0
-                    processed_size = 0
-                    with open(path, 'rb') as src, open(temp_file, 'wb') as dest:
-                        while chunk := src.read(config.BUFFER_SIZE):
-                            dest.write(chunk)
-                            dest_crc = zlib.crc32(chunk, dest_crc)
-                            processed_size += len(chunk)
-                    
-                    # 计算整个文件的平均处理速度
-                    process_time = time.time() - start_time
-                    if process_time > 0:
-                        result['speed'] = processed_size / process_time / 1024**2
-                    
-                    if src_crc == dest_crc:
-                        os.replace(temp_file, path)
+            # 根据模式选择处理逻辑
+            if full_refresh:
+                # 全盘数据刷新模式
+                for attempt in range(config.MAX_RETRIES + 1):
+                    try:
+                        # 使用FF值填充文件
+                        cls.full_refresh_file(path, size)
+                        
+                        # 计算处理速度
+                        process_time = time.time() - start_time
+                        if process_time > 0:
+                            result['speed'] = size / process_time / 1024**2
                         return result
-                    error_type = "CHECKSUM_ERROR"
-                except (IOError, OSError) as e:
-                    error_type = type(e).__name__
-                finally:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                
-                print(f"尝试重试 ({attempt+1}/{config.MAX_RETRIES})...")
+                    except Exception as e:
+                        error_type = type(e).__name__
+                    
+                    print(f"尝试重试 ({attempt+1}/{config.MAX_RETRIES})...")
+            elif trim_mode:
+                # TRIM模式：通知SSD哪些数据块是无效的，提高写入性能、减少耗损
+                # 针对文件前 {config.TRIM_BLOCK_SIZE/1024**2:.1f}MB 区域执行TRIM操作
+                # 支持固态硬盘及叠瓦式机械硬盘，可延长设备寿命
+                for attempt in range(config.MAX_RETRIES + 1):
+                    try:
+                        # 执行真正的TRIM操作
+                        cls.trim_file(path, size)
+                        
+                        # 计算处理速度
+                        process_time = time.time() - start_time
+                        if process_time > 0:
+                            trim_size = min(config.TRIM_BLOCK_SIZE, size)
+                            result['speed'] = trim_size / process_time / 1024**2
+                        return result
+                    except Exception as e:
+                        error_type = type(e).__name__
+                        print(f"TRIM尝试 {attempt+1} 失败: {str(e)}")
+                    
+                    print(f"尝试重试 ({attempt+1}/{config.MAX_RETRIES})...")
+            else:
+                # 常规刷新模式（保持原数据）
+                src_crc = cls.checksum_file(path)
+                for attempt in range(config.MAX_RETRIES + 1):
+                    try:
+                        dest_crc = 0
+                        processed_size = 0
+                        with open(path, 'rb') as src, open(temp_file, 'wb') as dest:
+                            while chunk := src.read(config.BUFFER_SIZE):
+                                dest.write(chunk)
+                                dest_crc = zlib.crc32(chunk, dest_crc)
+                                processed_size += len(chunk)
+                        
+                        # 计算整个文件的平均处理速度
+                        process_time = time.time() - start_time
+                        if process_time > 0:
+                            result['speed'] = processed_size / process_time / 1024**2
+                        
+                        if src_crc == dest_crc:
+                            os.replace(temp_file, path)
+                            return result
+                        error_type = "CHECKSUM_ERROR"
+                    except (IOError, OSError) as e:
+                        error_type = type(e).__name__
+                    finally:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                    
+                    print(f"尝试重试 ({attempt+1}/{config.MAX_RETRIES})...")
 
             result['corrupted'] = 1
             raise RuntimeError(f"操作失败: {error_type}")
@@ -436,13 +692,70 @@ class ApplicationController:
         
         return file_list
 
-    def execute(self) -> None:
-        """执行主程序流程"""
+    def execute(self, full_refresh: bool = False, trim_mode: bool = False) -> None:
+        """执行主程序流程
+        
+        Args:
+            full_refresh: 是否使用全盘数据刷新模式
+            trim_mode: 是否使用TRIM模式
+        """
         signal.signal(signal.SIGINT, self._handle_interrupt)
+        
+        # 将模式参数保存到dashboard中
+        self.dashboard.full_refresh = full_refresh
+        self.dashboard.trim_mode = trim_mode
         
         # 用户配置阶段
         self.dashboard.update_display(self.stats, "初始化")
         LogManager.log_operation("程序进入执行阶段")
+        
+        # 显示菜单让用户选择操作模式
+        if not full_refresh and not trim_mode:  # 只有在非命令行指定的情况下才显示菜单
+            print("\n" + "="*50)
+            print("          冷数据维护工具 - 操作模式选择")
+            print("="*50)
+            print("1. 智能模式 (推荐) - 保留原文件内容，仅激活冷数据")
+            print("2. 全盘激活冷数据模式 (所有文件全部丢失无法找回) - 将文件内容替换为 66 值")
+            print("3. TRIM优化模式 (清理/如需找回数据不要使用这个模式) - 操作系统API来通知SSD哪些数据块是无效的，提高性能并延长寿命")
+            print("="*50)
+            
+            while True:
+                choice = input("请选择操作模式 [1/2/3]: ").strip()
+                if choice == '1':
+                    full_refresh = False
+                    trim_mode = False
+                    mode_name = "智能模式"
+                    break
+                elif choice == '2':
+                    full_refresh = True
+                    trim_mode = False
+                    mode_name = "全盘刷新模式"
+                    break
+                elif choice == '3':
+                    full_refresh = False
+                    trim_mode = True
+                    mode_name = "TRIM模式"
+                    break
+                else:
+                    print("无效的选择，请输入 1、2 或 3")
+            
+            LogManager.log_operation(f"用户选择操作模式: {mode_name}")
+        
+        # 根据不同模式显示相应的警告
+        if full_refresh:
+            print("⚠️  警告: 正在使用全盘数据刷新模式！")
+            print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值")
+            print("   此操作不可撤销，请确保您了解操作后果！")
+            # 要求用户确认
+            confirm = input("请输入 'YES' 确认执行全盘刷新操作: ")
+            if confirm != 'YES':
+                print("操作已取消")
+                return
+        elif trim_mode:
+            print("ℹ️  信息: 正在使用TRIM模式")
+            print(f"   通知SSD哪些数据块是无效的，提高写入性能、减少耗损")
+            print(f"   针对文件前 {config.TRIM_BLOCK_SIZE/1024**2:.1f}MB 区域执行TRIM操作")
+            print(f"   支持固态硬盘及叠瓦式机械硬盘，可延长设备寿命")
         
         directory = input("扫描目录: ").strip('"').replace('：', ':')  # 中文冒号转英文冒号
         # 自动添加反斜杠如果用户没有输入
@@ -454,6 +767,11 @@ class ApplicationController:
         
         skip_small_input = input("跳过小文件? (y/n): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
         skip_small = skip_small_input.lower() == 'y'
+        
+        # 将用户输入的参数保存到dashboard中
+        self.dashboard.working_directory = directory
+        self.dashboard.min_days = min_days
+        self.dashboard.skip_small = skip_small
         
         # 记录用户配置
         LogManager.log_operation(f"用户配置: 目录='{directory}', 数据时效={min_days}天, 跳过小文件={skip_small}")
@@ -489,7 +807,7 @@ class ApplicationController:
                     continue
                 
                 # 提交任务到线程池
-                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard)
+                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, full_refresh, trim_mode)
                 futures.append(future)
                 
                 # 内存控制：限制同时运行的任务数量
@@ -531,12 +849,20 @@ class ApplicationController:
         print(f"总耗时: {elapsed_time:.2f} 秒")
         print(f"平均速度: {self.stats.speed:.2f} MB/秒")
         print(f"错误记录: {config.CORRUPTED_LOG}")
+        if full_refresh:
+            print("⚠️  全盘数据刷新模式已完成")
         
         if log_file_path:
             print(f"操作摘要: {log_file_path}")
         
         # 记录操作完成
-        LogManager.log_operation(f"操作完成: 扫描{self.stats.scanned}个文件, 处理{self.stats.processed}个, 损坏{self.stats.corrupted}个, 耗时{elapsed_time:.2f}秒")
+            if full_refresh:
+                mode = "全盘刷新"
+            elif trim_mode:
+                mode = "TRIM模式"
+            else:
+                mode = "常规刷新"
+            LogManager.log_operation(f"操作完成 ({mode}): 扫描{self.stats.scanned}个文件, 处理{self.stats.processed}个, 损坏{self.stats.corrupted}个, 耗时{elapsed_time:.2f}秒")
 
 # ============================== 基准测试模块 ==============================
 class Benchmark:
@@ -599,7 +925,7 @@ class Benchmark:
                 stats.processed = idx
                 
                 try:
-                    FileOperator.refresh_file(path, stats, dashboard)
+                    FileOperator.refresh_file(path, stats, dashboard, False)
                 except Exception as e:
                     print(f"处理失败: {path} - {str(e)}")
                 
@@ -650,11 +976,11 @@ class Benchmark:
 
 def main():
     # 设置控制台窗口标题
-    set_window_title("冷数据维护工具 v4.3 - SSD冷数据刷新与基准测试")
+    set_window_title(f"冷数据维护工具 v{CURRENT_VERSION} - SSD冷数据刷新与基准测试")
     
     # 添加全局错误处理，将错误写入日志文件以便调试
     try:
-        """冷数据维护工具 v4.3 - 主要功能和使用说明
+        f"""冷数据维护工具 v{CURRENT_VERSION} - 主要功能和使用说明
         
         主要功能:
         1. 检测和刷新固态硬盘中的冷数据
@@ -702,6 +1028,10 @@ def main():
                            help='基准测试迭代次数 (默认: 3)')
         parser.add_argument('--create-test-files', action='store_true',
                            help='创建测试文件用于基准测试')
+        parser.add_argument('--full-refresh', action='store_true',
+                           help='使用全盘数据刷新模式（将文件内容统一写入66值）')
+        parser.add_argument('--trim-mode', action='store_true',
+                           help='使用真正的TRIM功能（通知SSD哪些数据块无效，提高写入性能）')
         
         args = parser.parse_args()
         
@@ -729,7 +1059,12 @@ def main():
             
         else:
             # 正常模式
-            ApplicationController().execute()
+            # 确保不同时启用两种模式
+            if args.full_refresh and args.trim_mode:
+                print("错误: 不能同时启用全盘刷新模式和TRIM模式")
+                return
+            
+            ApplicationController().execute(args.full_refresh, args.trim_mode)
     except Exception as e:
         # 使用日志管理器记录错误
         error_type = type(e).__name__

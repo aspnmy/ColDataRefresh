@@ -5,7 +5,18 @@ REM 保存当前目录并切换到脚本所在目录
 set "CURRENT_DIR=%cd%"
 cd /d "%~dp0"
 
-echo 正在构建冷数据维护工具 v4.3.2..
+REM 从version.txt读取版本号
+set "DEFAULT_VERSION=4.3.2"
+if exist "version.txt" (
+    set /p "APP_VERSION=<version.txt"
+    set "APP_VERSION=!APP_VERSION: =!"
+) else (
+    set "APP_VERSION=!DEFAULT_VERSION!"
+    echo 警告：未找到version.txt文件，使用默认版本 !DEFAULT_VERSION!
+    echo !DEFAULT_VERSION! > version.txt
+)
+
+echo 正在构建冷数据维护工具 v!APP_VERSION!..
 
 REM 检查Python是否安装
 python --version >nul 2>&1
@@ -47,13 +58,13 @@ REM 使用Python -m方式运行pyinstaller，避免PATH环境变量问题
 echo 正在生成可执行文件...
 echo 使用Python模块方式调用pyinstaller...
 if exist "devrom.ico" (
-    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v4.3.2 --icon=devrom.ico coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v!APP_VERSION! --icon=devrom.ico coldatafresh.py
 ) else (
-    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v4.3.2 coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v!APP_VERSION! coldatafresh.py
 )
 
 if !errorlevel! equ 0 (
-    echo 构建完成！可执行文件: dist\coldatafresh_v4.3.2.exe
+    echo 构建完成！可执行文件: dist\coldatafresh_v!APP_VERSION!.exe
     echo 请以管理员权限运行生成的可执行文件
     
     REM 可选：自动打开dist目录
