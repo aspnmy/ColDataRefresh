@@ -25,8 +25,10 @@ def set_window_title(title: str = "冷数据维护工具 v4.3") -> None:
 # ============================== 系统配置模块 ==============================
 @dataclass(frozen=True)
 class Config:
-    LOG_FILE: str = "refresh_log.json"
-    CORRUPTED_LOG: str = "corrupted_files.log"
+    # 日志文件使用绝对路径，确保在exe运行时能正确保存
+    LOG_FILE: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "refresh_log.json")
+    CORRUPTED_LOG: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "corrupted_files.log")
+    ERROR_LOG: str = os.path.join(os.path.expanduser("~"), "coldatafresh", "error.log")
     BUFFER_SIZE: int = 4 * 1024
     MAX_RETRIES: int = 3
     LARGE_FILE: int = 100 * 1024**2      # 100MB以上为大文件
@@ -42,6 +44,120 @@ class FileCategory(Enum):
     LARGE = auto()
 
 config = Config()
+
+# ============================== 日志管理模块 ==============================
+class LogManager:
+    """日志管理器，负责确保日志目录存在并提供统一的日志记录功能"""
+    
+    @staticmethod
+    def ensure_log_directory():
+        """确保日志目录存在，如果不存在则创建"""
+        log_dir = os.path.dirname(config.LOG_FILE)
+        if log_dir and not os.path.exists(log_dir):
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                print(f"日志目录已创建: {log_dir}")
+            except Exception as e:
+                print(f"警告: 无法创建日志目录: {e}")
+    
+    @staticmethod
+    def log_operation(message: str, level: str = "INFO"):
+        """记录操作日志到统一的错误日志文件"""
+        try:
+            LogManager.ensure_log_directory()
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            log_entry = f"[{timestamp}] [{level}] {message}\n"
+            
+            with open(config.ERROR_LOG, 'a', encoding='utf-8', errors='replace') as f:
+                f.write(log_entry)
+                f.flush()
+                os.fsync(f.fileno())  # 确保写入到磁盘
+        except Exception as e:
+            print(f"日志记录失败: {e}")
+    
+    @staticmethod
+    def log_corrupted_file(path: str, error_type: str, error_message: str):
+        """记录损坏文件信息"""
+        try:
+            LogManager.ensure_log_directory()
+            log_entry = f"{datetime.now():%Y-%m-%d %H:%M:%S}|{path}|{error_type}|{error_message}\n"
+            
+            with open(config.CORRUPTED_LOG, 'a', encoding='utf-8', errors='replace') as f:
+                f.write(log_entry)
+                f.flush()
+                os.fsync(f.fileno())  # 确保写入到磁盘
+        except Exception as e:
+            print(f"损坏文件日志记录失败: {e}")
+            LogManager.log_operation(f"无法记录损坏文件: {path}, 错误: {e}", "ERROR")
+    
+    @staticmethod
+    def save_operation_summary(stats: OperationStats, duration: float):
+        """保存操作摘要到JSON日志文件"""
+        try:
+            LogManager.ensure_log_directory()
+            
+            # 读取现有日志或创建新的
+            try:
+                if os.path.exists(config.LOG_FILE):
+                    with open(config.LOG_FILE, 'r', encoding='utf-8') as f:
+                        log_data = json.load(f)
+                else:
+                    log_data = {
+                        "operations": [],
+                        "total_scanned": 0,
+                        "total_processed": 0,
+                        "total_corrupted": 0
+                    }
+            except Exception as e:
+                log_data = {
+                    "operations": [],
+                    "total_scanned": 0,
+                    "total_processed": 0,
+                    "total_corrupted": 0
+                }
+                LogManager.log_operation(f"读取现有日志失败，创建新日志: {e}", "WARNING")
+            
+            # 添加新操作记录
+            operation_record = {
+                "timestamp": datetime.now().isoformat(),
+                "duration_seconds": round(duration, 2),
+                "stats": {
+                    "scanned": stats.scanned,
+                    "processed": stats.processed,
+                    "large": stats.large,
+                    "medium": stats.medium,
+                    "small": stats.small,
+                    "corrupted": stats.corrupted,
+                    "final_speed": round(stats.speed, 2)
+                }
+            }
+            
+            log_data["operations"].append(operation_record)
+            
+            # 更新累计统计
+            log_data["total_scanned"] += stats.scanned
+            log_data["total_processed"] += stats.processed
+            log_data["total_corrupted"] += stats.corrupted
+            
+            # 只保留最近100条操作记录
+            if len(log_data["operations"]) > 100:
+                log_data["operations"] = log_data["operations"][-100:]
+            
+            # 写入文件
+            with open(config.LOG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(log_data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # 确保写入到磁盘
+                
+            return config.LOG_FILE
+        except Exception as e:
+            error_msg = f"保存操作摘要失败: {e}"
+            print(error_msg)
+            LogManager.log_operation(error_msg, "ERROR")
+            return None
+
+# 初始化日志管理器，确保日志目录存在
+LogManager.ensure_log_directory()
 
 # ============================== 数据模型模块 ==============================
 class LogData(TypedDict):
@@ -267,14 +383,9 @@ class FileOperator:
             print(f"❌ 无法读取文件: {path}")
             print(f"   错误类型: {error_type}")
             print(f"   错误信息: {str(e)}")
-            # 增强的日志记录
-            try:
-                log_entry = f"{datetime.now():%Y-%m-%d %H:%M}|{path}|{error_type}|{str(e)}\n"
-                with open(config.CORRUPTED_LOG, 'a', encoding='utf-8', errors='replace') as f:
-                    f.write(log_entry)
-                    f.flush()  # 强制写入磁盘
-            except Exception as log_error:
-                print(f"⚠️ 日志记录失败: {str(log_error)}")
+            # 使用日志管理器记录损坏文件
+            LogManager.log_corrupted_file(path, error_type, str(e))
+            LogManager.log_operation(f"文件处理失败 (超过最大重试次数): {path}, 错误: {str(e)}", "ERROR")
             dashboard.update_display(stats, "错误处理")
         finally:
             return result
@@ -324,24 +435,40 @@ class ApplicationController:
         return file_list
 
     def execute(self) -> None:
+        """执行主程序流程"""
         signal.signal(signal.SIGINT, self._handle_interrupt)
         
         # 用户配置阶段
         self.dashboard.update_display(self.stats, "初始化")
+        LogManager.log_operation("程序进入执行阶段")
+        
         directory = input("扫描目录: ").strip('"').replace('：', ':')  # 中文冒号转英文冒号
         # 自动添加反斜杠如果用户没有输入
         if directory and not directory.endswith(('\\', '/')):
             directory += '\\'
+        
         min_days_input = input("数据时效(天): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
         min_days = int(min_days_input) if min_days_input else 0
+        
         skip_small_input = input("跳过小文件? (y/n): ").replace('：', ':').replace('，', ',')  # 中文标点转英文
         skip_small = skip_small_input.lower() == 'y'
+        
+        # 记录用户配置
+        LogManager.log_operation(f"用户配置: 目录='{directory}', 数据时效={min_days}天, 跳过小文件={skip_small}")
 
         # 文件扫描阶段（实时显示进度）
         self.dashboard.update_display(self.stats, "扫描中")
-        target_files = self._collect_files(directory, min_days)
-        total_files = len(target_files)
-        self.stats.progress = 0.1  # 进入处理阶段初始进度
+        LogManager.log_operation(f"开始扫描目录: {directory}, 最小天数: {min_days}")
+        
+        try:
+            target_files = self._collect_files(directory, min_days)
+            total_files = len(target_files)
+            self.stats.progress = 0.1  # 进入处理阶段初始进度
+            
+            LogManager.log_operation(f"扫描完成，发现 {total_files} 个目标文件")
+        except Exception as e:
+            LogManager.log_operation(f"扫描目录失败: {str(e)}", "ERROR")
+            raise
 
         # 文件处理阶段 - 多线程优化
         start_time = time.time()
@@ -383,16 +510,31 @@ class ApplicationController:
                 try:
                     future.result()
                 except Exception as e:
-                    print(f"\n处理失败: {str(e)}")
+                    error_msg = str(e)
+                    print(f"\n处理失败: {error_msg}")
+                    LogManager.log_operation(f"任务执行异常: {error_msg}", "WARNING")
                 processed_count += 1
                 self.stats.processed = processed_count
                 self.stats.progress = processed_count / total_files if total_files else 0
                 self.dashboard.update_display(self.stats, "处理中")
 
         # 结束阶段
+        elapsed_time = time.time() - start_time
         self.dashboard.update_display(self.stats, "完成")
+        
+        # 保存操作摘要到日志
+        log_file_path = LogManager.save_operation_summary(self.stats, elapsed_time)
+        
         print(f"\n操作总结: 处理文件 {self.stats.processed} 个 (共发现 {self.stats.scanned} 个)")
+        print(f"总耗时: {elapsed_time:.2f} 秒")
+        print(f"平均速度: {self.stats.speed:.2f} MB/秒")
         print(f"错误记录: {config.CORRUPTED_LOG}")
+        
+        if log_file_path:
+            print(f"操作摘要: {log_file_path}")
+        
+        # 记录操作完成
+        LogManager.log_operation(f"操作完成: 扫描{self.stats.scanned}个文件, 处理{self.stats.processed}个, 损坏{self.stats.corrupted}个, 耗时{elapsed_time:.2f}秒")
 
 # ============================== 基准测试模块 ==============================
 class Benchmark:
@@ -503,32 +645,34 @@ def main():
     # 设置控制台窗口标题
     set_window_title("冷数据维护工具 v4.3 - SSD冷数据刷新与基准测试")
     
-    """冷数据维护工具 v4.3 - 主要功能和使用说明
-    
-    主要功能:
-    1. 检测和刷新固态硬盘中的冷数据
-    2. 支持数据校验确保文件安全
-    3. 实时进度显示和性能监控
-    4. 基准测试模式评估性能
-    
-    文件分类标准:
-    - 小文件: < 10MB (可配置跳过)
-    - 中等文件: 10MB - 100MB
-    - 大文件: > 100MB
-    
-    使用示例:
-    正常模式: python coldatafresh.py
-    基准测试: python coldatafresh.py --benchmark --test-dir ./test_data --iterations 3
-    创建测试文件: python coldatafresh.py --create-test-files --test-dir ./test_data
-    
-    注意: 建议以管理员权限运行以确保文件访问权限
-    """
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description='冷数据维护工具 - 检测和刷新固态硬盘冷数据',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+    # 添加全局错误处理，将错误写入日志文件以便调试
+    try:
+        """冷数据维护工具 v4.3 - 主要功能和使用说明
+        
+        主要功能:
+        1. 检测和刷新固态硬盘中的冷数据
+        2. 支持数据校验确保文件安全
+        3. 实时进度显示和性能监控
+        4. 基准测试模式评估性能
+        
+        文件分类标准:
+        - 小文件: < 10MB (可配置跳过)
+        - 中等文件: 10MB - 100MB
+        - 大文件: > 100MB
+        
+        使用示例:
+        正常模式: python coldatafresh.py
+        基准测试: python coldatafresh.py --benchmark --test-dir ./test_data --iterations 3
+        创建测试文件: python coldatafresh.py --create-test-files --test-dir ./test_data
+        
+        注意: 建议以管理员权限运行以确保文件访问权限
+        """
+        import argparse
+        
+        parser = argparse.ArgumentParser(
+            description='冷数据维护工具 - 检测和刷新固态硬盘冷数据',
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
 使用示例:
   正常模式: python coldatafresh.py
   基准测试: python coldatafresh.py --benchmark --test-dir ./test_data --iterations 3
@@ -543,44 +687,84 @@ def main():
   • 建议以管理员权限运行
   • 操作前请确保有数据备份
   • 支持进度保存和恢复功能
-        """
-    )
-    parser.add_argument('--benchmark', action='store_true', help='运行基准测试模式')
-    parser.add_argument('--test-dir', type=str, default='./benchmark_test', 
-                       help='基准测试文件目录 (默认: ./benchmark_test)')
-    parser.add_argument('--iterations', type=int, default=3, 
-                       help='基准测试迭代次数 (默认: 3)')
-    parser.add_argument('--create-test-files', action='store_true',
-                       help='创建测试文件用于基准测试')
-    
-    args = parser.parse_args()
-    
-    if args.create_test_files:
-        Benchmark.create_test_files(args.test_dir)
-        return
-    
-    if args.benchmark:
-        # 确保测试目录存在
-        if not os.path.exists(args.test_dir):
-            print(f"测试目录不存在: {args.test_dir}")
-            print("请先使用 --create-test-files 创建测试文件")
+        """)
+        parser.add_argument('--benchmark', action='store_true', help='运行基准测试模式')
+        parser.add_argument('--test-dir', type=str, default='./benchmark_test', 
+                           help='基准测试文件目录 (默认: ./benchmark_test)')
+        parser.add_argument('--iterations', type=int, default=3, 
+                           help='基准测试迭代次数 (默认: 3)')
+        parser.add_argument('--create-test-files', action='store_true',
+                           help='创建测试文件用于基准测试')
+        
+        args = parser.parse_args()
+        
+        if args.create_test_files:
+            Benchmark.create_test_files(args.test_dir)
             return
         
-        print("开始性能基准测试...")
-        results = Benchmark.run_benchmark(args.test_dir, args.iterations)
-        Benchmark.save_results(results)
+        if args.benchmark:
+            # 确保测试目录存在
+            if not os.path.exists(args.test_dir):
+                print(f"测试目录不存在: {args.test_dir}")
+                print("请先使用 --create-test-files 创建测试文件")
+                return
+            
+            print("开始性能基准测试...")
+            results = Benchmark.run_benchmark(args.test_dir, args.iterations)
+            Benchmark.save_results(results)
+            
+            # 打印摘要
+            summary = results["summary"]
+            print(f"\n=== 基准测试摘要 ===")
+            print(f"平均耗时: {summary['avg_time']:.2f} 秒")
+            print(f"平均速度: {summary['avg_speed']:.2f} MB/s")
+            print(f"测试轮数: {summary['total_iterations']}")
+            
+        else:
+            # 正常模式
+            ApplicationController().execute()
+    except Exception as e:
+        # 使用日志管理器记录错误
+        error_type = type(e).__name__
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
         
-        # 打印摘要
-        summary = results["summary"]
-        print(f"\n=== 基准测试摘要 ===")
-        print(f"平均耗时: {summary['avg_time']:.2f} 秒")
-        print(f"平均速度: {summary['avg_speed']:.2f} MB/s")
-        print(f"测试轮数: {summary['total_iterations']}")
+        # 记录详细错误信息
+        LogManager.log_operation(f"主程序错误: {error_type} - {error_message}\n{stack_trace}", "ERROR")
         
-    else:
-        # 正常模式
-        ApplicationController().execute()
+        # 重新抛出异常，让外部处理
+        raise
 
 
 if __name__ == "__main__":
-    main()
+    # 确保日志管理器已初始化
+    LogManager.ensure_log_directory()
+    LogManager.log_operation("程序启动")
+    
+    # 添加全局异常处理，捕获所有未处理的异常并写入日志
+    try:
+        main()
+    except Exception as e:
+        # 使用日志管理器记录错误
+        error_type = type(e).__name__
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
+        
+        # 记录到所有可用的日志文件
+        LogManager.log_operation(f"未捕获异常: {error_type} - {error_message}\n{stack_trace}", "ERROR")
+        
+        # 在控制台显示错误信息
+        print(f"\n程序遇到错误，请查看日志文件获取详细信息: {config.ERROR_LOG}")
+        print(f"错误类型: {error_type}")
+        print(f"错误信息: {error_message}")
+        
+        # 在Windows下保持窗口打开
+        if os.name == 'nt':
+            print("\n按Enter键退出...")
+            try:
+                input()
+            except:
+                pass
+        
+        # 重新抛出异常以保持原始行为
+        raise
