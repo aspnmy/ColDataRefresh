@@ -22,17 +22,14 @@ if !errorlevel! neq 0 (
     echo 警告：依赖安装失败，可能会影响构建
 )
 
-REM 检查pyinstaller是否安装，如果没有则安装
-echo 检查PyInstaller...
-pyinstaller --version >nul 2>&1
+REM 强制安装pyinstaller，避免PATH问题
+echo 安装PyInstaller...
+pip install pyinstaller --upgrade
 if !errorlevel! neq 0 (
-    echo 正在安装PyInstaller...
-    pip install pyinstaller
-    if !errorlevel! neq 0 (
-        echo 错误：PyInstaller安装失败
-        pause
-        exit /b 1
-    )
+    echo 错误：PyInstaller安装失败，请检查网络连接或Python环境
+    echo 尝试使用管理员权限运行此脚本
+    pause
+    exit /b 1
 )
 
 REM 检查必要文件是否存在
@@ -46,12 +43,13 @@ if not exist "devrom.ico" (
     echo 警告：找不到devrom.ico图标文件，将使用默认图标
 )
 
-REM 使用pyinstaller构建单文件可执行程序
+REM 使用Python -m方式运行pyinstaller，避免PATH环境变量问题
 echo 正在生成可执行文件...
+echo 使用Python模块方式调用pyinstaller...
 if exist "devrom.ico" (
-    pyinstaller --onefile --uac-admin --name coldatafresh_v4.3.2 --icon=devrom.ico coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v4.3.2 --icon=devrom.ico coldatafresh.py
 ) else (
-    pyinstaller --onefile --uac-admin --name coldatafresh_v4.3.2 coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name coldatafresh_v4.3.2 coldatafresh.py
 )
 
 if !errorlevel! equ 0 (
@@ -63,6 +61,10 @@ if !errorlevel! equ 0 (
     start dist
 ) else (
     echo 错误：构建失败
+    echo 请尝试：
+    echo 1. 以管理员权限运行此脚本
+    echo 2. 确保Python已正确安装并添加到系统PATH
+    echo 3. 检查网络连接是否正常
     pause
 )
 
