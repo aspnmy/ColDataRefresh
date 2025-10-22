@@ -830,75 +830,99 @@ class ApplicationController:
         self.dashboard.full_refresh = full_refresh
         self.dashboard.trim_mode = trim_mode
         
-        # 用户配置阶段
-        self.dashboard.update_display(self.stats, "初始化")
-        LogManager.log_operation("程序进入执行阶段")
-        
-        # 显示菜单让用户选择操作模式
-        if not full_refresh and not trim_mode:  # 只有在非命令行指定的情况下才显示菜单
-            print("\n" + "="*50)
-            print("          冷数据维护工具 - 操作模式选择")
-            print("="*50)
-            print("1. 智能模式 (推荐) - 保留原文件内容，仅激活冷数据")
-            print("2. 全盘激活冷数据模式 (所有文件全部丢失无法找回) - 将文件内容替换为 66 值")
-            print("3. TRIM优化模式 (清理/如需找回数据不要使用这个模式) - 操作系统API来通知SSD哪些数据块是无效的，提高性能并延长寿命")
-            print("="*50)
+        # 添加主循环以支持返回主菜单
+        while True:
+            # 重置统计信息
+            self.stats = OperationStats()
             
-            while True:
-                choice = input("请选择操作模式 [1/2/3]: ").strip()
-                if choice == '1':
-                    full_refresh = False
-                    trim_mode = False
-                    mode_name = "智能模式"
-                    break
-                elif choice == '2':
-                    full_refresh = True
-                    trim_mode = False
-                    mode_name = "全盘刷新模式"
-                    break
-                elif choice == '3':
-                    full_refresh = False
-                    trim_mode = True
-                    mode_name = "TRIM模式"
-                    break
-                else:
-                    print("无效的选择，请输入 1、2 或 3")
+            # 用户配置阶段
+            self.dashboard.update_display(self.stats, "初始化")
+            LogManager.log_operation("程序进入执行阶段")
             
-            LogManager.log_operation(f"用户选择操作模式: {mode_name}")
-        
-        # 根据不同模式显示相应的警告和确认提示
-        if full_refresh:
-            print("⚠️  警告: 正在使用全盘数据刷新模式！")
-            print("   使用此模式将完全擦除SSD硬盘中的数据，所有文件内容将丢失且无法找回！")
-            print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值")
-            print("   此操作不可撤销，请确保您了解操作后果！")
+            # 重置本地模式标志
+            local_full_refresh = full_refresh
+            local_trim_mode = trim_mode
+            confirmed = False
             
-            # 要求用户确认两次
-            confirm1 = input("请输入 'yes' 确认执行全盘刷新操作 (第一次): ").strip().lower()
-            if confirm1 != 'yes':
-                print("操作已取消")
-                return
-            
-            confirm2 = input("请再次输入 'yes' 确认执行全盘刷新操作 (第二次): ").strip().lower()
-            if confirm2 != 'yes':
-                print("操作已取消")
-                return
+            # 显示菜单让用户选择操作模式
+            if not full_refresh and not trim_mode:  # 只有在非命令行指定的情况下才显示菜单
+                print("\n" + "="*50)
+                print("          冷数据维护工具 - 操作模式选择")
+                print("="*50)
+                print("1. 智能模式 (推荐) - 保留原文件内容，仅激活冷数据")
+                print("2. 全盘激活冷数据模式 (所有文件全部丢失无法找回) - 将文件内容替换为 66 值")
+                print("3. TRIM优化模式 (清理/如需找回数据不要使用这个模式) - 操作系统API来通知SSD哪些数据块是无效的，提高性能并延长寿命")
+                print("="*50)
                 
-            LogManager.log_operation("用户已确认两次，开始执行全盘刷新操作")
-        elif trim_mode:
-            print("⚠️  警告: 正在使用TRIM优化模式！")
-            print("   如需找回SSD中删除的数据请不要使用此模式，先找回数据以后再使用！")
-            print(f"   通知SSD哪些数据块是无效的，提高写入性能、减少耗损")
-            print(f"   针对文件前 {config.TRIM_BLOCK_SIZE/1024**2:.1f}MB 区域执行TRIM操作")
-            
-            # 要求用户确认一次
-            confirm = input("请输入 'yes' 确认执行TRIM优化操作: ").strip().lower()
-            if confirm != 'yes':
-                print("操作已取消")
-                return
+                while True:
+                    choice = input("请选择操作模式 [1/2/3]: ").strip()
+                    if choice == '1':
+                        local_full_refresh = False
+                        local_trim_mode = False
+                        mode_name = "智能模式"
+                        break
+                    elif choice == '2':
+                        local_full_refresh = True
+                        local_trim_mode = False
+                        mode_name = "全盘刷新模式"
+                        break
+                    elif choice == '3':
+                        local_full_refresh = False
+                        local_trim_mode = True
+                        mode_name = "TRIM模式"
+                        break
+                    else:
+                        print("无效的选择，请输入 1、2 或 3")
                 
-            LogManager.log_operation("用户已确认，开始执行TRIM优化操作")
-        
+                LogManager.log_operation(f"用户选择操作模式: {mode_name}")
+            
+            # 根据不同模式显示相应的警告和确认提示
+            if local_full_refresh:
+                print("⚠️  警告: 正在使用全盘数据刷新模式！")
+                print("   使用此模式将完全擦除SSD硬盘中的数据，所有文件内容将丢失且无法找回！")
+                print(f"   所有文件内容将被替换为 {config.FULL_REFRESH_PATTERN.hex().upper()} 值")
+                print("   此操作不可撤销，请确保您了解操作后果！")
+                
+                # 要求用户确认两次
+                confirm1 = input("请输入 'yes' 确认执行全盘刷新操作 (第一次): ").strip().lower()
+                if confirm1 != 'yes':
+                    print("操作已取消")
+                    print("返回主菜单...")
+                    continue  # 返回到主菜单
+                
+                confirm2 = input("请再次输入 'yes' 确认执行全盘刷新操作 (第二次): ").strip().lower()
+                if confirm2 != 'yes':
+                    print("操作已取消")
+                    print("返回主菜单...")
+                    continue  # 返回到主菜单
+                    
+                LogManager.log_operation("用户已确认两次，开始执行全盘刷新操作")
+                confirmed = True
+            elif local_trim_mode:
+                print("⚠️  警告: 正在使用TRIM优化模式！")
+                print("   如需找回SSD中删除的数据请不要使用此模式，先找回数据以后再使用！")
+                print(f"   通知SSD哪些数据块是无效的，提高写入性能、减少耗损")
+                print(f"   针对文件前 {config.TRIM_BLOCK_SIZE/1024**2:.1f}MB 区域执行TRIM操作")
+                
+                # 要求用户确认一次
+                confirm = input("请输入 'yes' 确认执行TRIM优化操作: ").strip().lower()
+                if confirm != 'yes':
+                    print("操作已取消")
+                    print("返回主菜单...")
+                    continue  # 返回到主菜单
+                    
+                LogManager.log_operation("用户已确认，开始执行TRIM优化操作")
+                confirmed = True
+            else:
+                # 智能模式不需要确认
+                confirmed = True
+            
+            if confirmed:
+                # 使用确认的模式设置dashboard
+                self.dashboard.full_refresh = local_full_refresh
+                self.dashboard.trim_mode = local_trim_mode
+                break  # 确认成功，退出循环继续执行后续流程
+
         directory = input("扫描目录: ").strip('"').replace('：', ':')  # 中文冒号转英文冒号
         # 自动添加反斜杠如果用户没有输入
         if directory and not directory.endswith(('\\', '/')):
