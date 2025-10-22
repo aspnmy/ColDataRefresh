@@ -283,8 +283,61 @@ def getWebSite():
     LogManager.log_operation("无法获取网站信息，使用默认值", "WARNING")
     return "115405294", "https://github.com/aspnmy/ColDataRefresh"
 
+def check_latest_version():
+    """
+    检查GitHub上的最新版本号
+    返回：最新版本号字符串，如果检查失败返回None
+    """
+    try:
+        releases_url = "https://api.github.com/repos/aspnmy/ColDataRefresh/releases/latest"
+        response = requests.get(releases_url, timeout=5)
+        response.raise_for_status()
+        
+        data = response.json()
+        latest_version = data.get('tag_name', '')
+        # 清理版本号，移除可能的'v'前缀
+        if latest_version.startswith('v'):
+            latest_version = latest_version[1:]
+        
+        LogManager.log_operation(f"获取到最新版本: {latest_version}", "INFO")
+        return latest_version
+    except Exception as e:
+        LogManager.log_operation(f"检查最新版本失败: {e}", "WARNING")
+        return None
+
+def compare_versions(current: str, latest: str) -> bool:
+    """
+    比较版本号，判断是否有新版本
+    返回：True表示有新版本，False表示已是最新版本
+    """
+    try:
+        # 分割版本号并转换为整数列表
+        current_parts = [int(part) for part in current.split('.')]
+        latest_parts = [int(part) for part in latest.split('.')]
+        
+        # 补齐长度以便比较
+        max_len = max(len(current_parts), len(latest_parts))
+        current_parts.extend([0] * (max_len - len(current_parts)))
+        latest_parts.extend([0] * (max_len - len(latest_parts)))
+        
+        # 从左到右比较每个部分
+        for i in range(max_len):
+            if latest_parts[i] > current_parts[i]:
+                return True
+            elif latest_parts[i] < current_parts[i]:
+                return False
+        
+        return False  # 版本相同
+    except Exception as e:
+        LogManager.log_operation(f"版本比较失败: {e}", "WARNING")
+        return False
+
 # 获取QQ群和URL常量
 qqun, url = getWebSite()
+
+# 检查是否有新版本
+LATEST_VERSION = check_latest_version()
+HAS_NEW_VERSION = LATEST_VERSION and compare_versions(CURRENT_VERSION, LATEST_VERSION)
 
 # ============================== 终端控制模块 ==============================
 class TerminalManager:
@@ -361,7 +414,19 @@ class Dashboard:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
         h_line = border['horizontal'] * 70
         header = self.terminal.colored_text(f" SSD掉速激活-冷数据维护系统 v{CURRENT_VERSION} 作者:support@e2bank.cn By Python3.12.3 QQ群：{qqun} Url: {url}", bg=44)
-        print(self._safe_print(f"\n{h_line}\n{header:^70}\n{h_line}"))
+        
+        # 打印主标题
+        print(self._safe_print(f"\n{h_line}\n{header:^70}"))
+        
+        # 如果有新版本，显示通知
+        if 'HAS_NEW_VERSION' in globals() and HAS_NEW_VERSION and 'LATEST_VERSION' in globals():
+            update_notice = self.terminal.colored_text(
+                f"⚠️  发现新版本 v{LATEST_VERSION}，请及时更新！", 
+                fg=33, bg=41  # 黄色文字，红色背景
+            )
+            print(self._safe_print(f"{update_notice:^70}"))
+        
+        print(self._safe_print(f"{h_line}"))
 
     def _render_stats(self, stats: OperationStats, phase: str) -> None:
         border = self._BORDER_MAP[self.terminal.safe_mode()]
