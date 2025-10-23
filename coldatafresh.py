@@ -26,17 +26,25 @@ except ImportError:
     HAS_REQUESTS = False
 
 # 读取版本号
-VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt')
 def get_version():
     """
     从version.txt文件读取当前版本号
+    支持PyInstaller打包后的环境
     如果文件不存在或读取失败，返回默认版本号
     """
     try:
+        # 处理PyInstaller打包后的情况
+        if hasattr(sys, '_MEIPASS'):
+            # 在打包后的环境中，文件位于_MEIPASS目录下
+            VERSION_FILE = os.path.join(sys._MEIPASS, 'version.txt')
+        else:
+            # 在正常Python环境中
+            VERSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'version.txt')
+        
         with open(VERSION_FILE, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except Exception:
-        return '4.3.0'  # 默认版本号
+        return '4.5.0'  # 更新默认版本号以匹配make.bat中的DEFAULT_VERSION
 
 # 获取当前版本
 CURRENT_VERSION = get_version()

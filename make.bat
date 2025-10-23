@@ -88,9 +88,9 @@ REM 使用Python -m方式运行pyinstaller，避免PATH环境变量问题
 echo 正在生成可执行文件...
 echo 使用Python模块方式调用pyinstaller...
 if exist "devrom.ico" (
-    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win --icon=devrom.ico coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win --icon=devrom.ico --add-data "version.txt;" coldatafresh.py
 ) else (
-    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win coldatafresh.py
+    python -m PyInstaller --onefile --uac-admin --name ColDataFresh_v!APP_VERSION!_win --add-data "version.txt;" coldatafresh.py
 )
 
 if !errorlevel! equ 0 (
