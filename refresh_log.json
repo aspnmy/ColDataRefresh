@@ -1,21 +1,21 @@
 {
   "operations": [
     {
-      "timestamp": "2025-10-22T04:49:10.645268",
-      "duration_seconds": 2.35,
+      "timestamp": "2025-11-24T22:50:39.533427",
+      "duration_seconds": 0.31,
       "stats": {
-        "scanned": 0,
-        "processed": 10,
-        "large": 0,
+        "scanned": 3,
+        "processed": 3,
+        "large": 1,
         "medium": 0,
-        "small": 0,
+        "small": 2,
         "corrupted": 0,
         "final_speed": 0.0
       }
     },
     {
-      "timestamp": "2025-10-22T08:01:51.532848",
-      "duration_seconds": 0.01,
+      "timestamp": "2025-11-24T22:51:35.056048",
+      "duration_seconds": 0.0,
       "stats": {
         "scanned": 0,
         "processed": 0,
@@ -27,7 +27,7 @@
       }
     }
   ],
-  "total_scanned": 0,
-  "total_processed": 10,
+  "total_scanned": 3,
+  "total_processed": 3,
   "total_corrupted": 0
 }

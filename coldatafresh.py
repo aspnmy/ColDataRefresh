@@ -9,6 +9,7 @@ import zlib
 import ctypes
 import signal
 import threading
+import traceback
 import concurrent.futures
 from dataclasses import dataclass
 from typing import TypedDict, List, Optional
@@ -17,6 +18,7 @@ from types import FrameType
 from enum import Enum, auto
 import json
 import platform
+import argparse
 
 # 尝试导入requests模块，如果不可用则设置标志
 try:
@@ -24,6 +26,165 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+def get_disk_space(drive):
+    """获取磁盘空间信息
+    
+    Args:
+        drive: 磁盘驱动器路径（如 'H:'）
+        
+    Returns:
+        tuple: (总容量字节, 可用容量字节)，如果出错则返回(0, 0)
+    """
+    try:
+        if platform.system() == 'Windows':
+            free_bytes = ctypes.c_ulonglong(0)
+            total_bytes = ctypes.c_ulonglong(0)
+            
+            # 使用Windows API获取磁盘空间
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                ctypes.c_wchar_p(drive),
+                None,  # 可用字节
+                ctypes.pointer(total_bytes),
+                ctypes.pointer(free_bytes)
+            )
+            
+            return total_bytes.value, free_bytes.value
+        else:
+            # Linux/Mac OS 使用statvfs
+            stat = os.statvfs(drive)
+            total_bytes = stat.f_blocks * stat.f_frsize
+            free_bytes = stat.f_bavail * stat.f_frsize
+            return total_bytes, free_bytes
+    except Exception as e:
+        print(f"获取磁盘空间失败: {str(e)}")
+        return 0, 0
+
+def format_size(size_bytes):
+    """格式化字节大小为可读格式
+    
+    Args:
+        size_bytes: 字节大小
+        
+    Returns:
+        str: 格式化后的大小字符串
+    """
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024**2:
+        return f"{size_bytes / 1024:.2f} KB"
+    elif size_bytes < 1024**3:
+        return f"{size_bytes / (1024**2):.2f} MB"
+    elif size_bytes < 1024**4:
+        return f"{size_bytes / (1024**3):.2f} GB"
+    else:
+        return f"{size_bytes / (1024**4):.2f} TB"
+
+def test_write_functionality(target_dir="H:", test_size_gb=50):
+    """测试文件写入功能
+    
+    Args:
+        target_dir: 目标测试目录，默认为H盘
+        test_size_gb: 测试文件大小（GB），默认为50GB
+    """
+    print("\n" + "="*60)
+    print("         测试文件写入功能")
+    print("="*60)
+    
+    test_files = []
+    temp_dir = None
+    
+    try:
+        # 检查目标目录
+        if not os.path.exists(target_dir):
+            print(f"错误: 目标目录不存在: {target_dir}")
+            return
+        
+        if not os.access(target_dir, os.W_OK):
+            print(f"错误: 没有写入权限: {target_dir}")
+            return
+        
+        # 创建临时测试目录 $aspnmytools
+        temp_dir = os.path.join(target_dir, "$aspnmytools")
+        if not os.path.exists(temp_dir):
+            try:
+                os.makedirs(temp_dir)
+                print(f"创建临时测试目录: {temp_dir}")
+            except Exception as e:
+                print(f"创建临时目录失败: {str(e)}")
+                return
+        
+        # 获取磁盘容量信息
+        total_bytes, free_bytes = get_disk_space(target_dir)
+        if total_bytes > 0:
+            print(f"磁盘信息:")
+            print(f"  总容量: {format_size(total_bytes)}")
+            print(f"  可用容量: {format_size(free_bytes)}")
+            print(f"  已用容量: {format_size(total_bytes - free_bytes)}")
+            
+            # 检查是否有足够空间
+            required_bytes = test_size_gb * 1024**3
+            if free_bytes < required_bytes:
+                print(f"\n警告: 可用空间不足! 需要 {test_size_gb} GB, 但只有 {free_bytes / (1024**3):.2f} GB 可用")
+                # 调整为可用空间的80%
+                test_size_gb = int(free_bytes * 0.8 / (1024**3))
+                print(f"自动调整写入大小为: {test_size_gb} GB")
+        
+        # 创建测试文件路径（使用临时目录）
+        test_file = os.path.join(temp_dir, "test_write_functionality.tmp")
+        test_files.append(test_file)
+        
+        target_size = test_size_gb * 1024**3  # 转换为字节
+        
+        print(f"\n测试设置:")
+        print(f"  测试目录: {target_dir}")
+        print(f"  测试文件: {test_file}")
+        print(f"  目标写入大小: {test_size_gb} GB")
+        print(f"  目标字节数: {target_size} bytes")
+        print(f"\n开始测试写入...")
+        
+        # 调用连续写入函数
+        stats = FileOperator.continuous_full_refresh_file(test_file, target_size)
+        
+        print("\n" + "="*60)
+        print("测试完成！")
+        print(f"实际写入容量: {stats['total_written'] / (1024**3):.2f} GB")
+        print(f"最高写入速度: {stats['max_speed_mbs']:.2f} MB/s")
+        print("="*60)
+        
+        # 删除测试文件
+        print(f"\n正在清理测试文件...")
+        for file_path in test_files:
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                    print(f"  删除文件: {file_path}")
+                except Exception as e:
+                    print(f"  删除文件失败 {file_path}: {str(e)}")
+        
+        # 清理临时测试目录
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                os.rmdir(temp_dir)
+                print(f"  删除临时测试目录: {temp_dir}")
+            except Exception as e:
+                print(f"  清理临时目录失败: {temp_dir} - {str(e)}")
+        print("清理完成！")
+        
+    except Exception as e:
+        print(f"测试失败: {str(e)}")
+        print(traceback.format_exc())
+        
+        # 发生异常时也尝试清理文件
+        if test_files:
+            print(f"\n尝试清理已创建的测试文件...")
+            for file_path in test_files:
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                        print(f"  删除文件: {file_path}")
+                    except Exception:
+                        pass
 
 # 读取版本号
 def get_version():
@@ -302,12 +463,21 @@ class LogManager:
     
     @staticmethod
     def log_corrupted_file(path: str, error_type: str, error_message: str):
-        """记录损坏文件信息"""
+        """记录损坏文件信息
+        
+        Args:
+            path: 文件路径
+            error_type: 错误类型
+            error_message: 错误信息
+        """
         try:
             LogManager.ensure_log_directory()
             log_entry = f"{datetime.now():%Y-%m-%d %H:%M:%S}|{path}|{error_type}|{error_message}\n"
             
-            with open(config.CORRUPTED_LOG, 'a', encoding='utf-8', errors='replace') as f:
+            # 确保日志文件写入到脚本同级目录
+            log_path = os.path.join(config.SCRIPT_DIR, "corrupted_files.log")
+            
+            with open(log_path, 'a', encoding='utf-8', errors='replace') as f:
                 f.write(log_entry)
                 f.flush()
                 os.fsync(f.fileno())  # 确保写入到磁盘
@@ -666,15 +836,27 @@ class FileOperator:
             bool: 操作是否成功
         """
         try:
+            # 检查是否为系统保护目录
+            dir_path = os.path.dirname(path)
+            if "$RECYCLE.BIN" in dir_path.upper() or "SYSTEM VOLUME INFORMATION" in dir_path.upper():
+                print(f"警告: 跳过系统保护目录中的文件: {path}")
+                return False
+            
             temp_file = f"{path}.tmp"
             processed_size = 0
             
             # 创建填充块
             fill_block = config.FULL_REFRESH_PATTERN * config.BUFFER_SIZE
             
+            # 使用用户选择的写入容量，但不超过原始文件大小
+            if hasattr(FileOperator, 'target_size'):
+                target_size = min(size, FileOperator.target_size)
+            else:
+                target_size = size
+            
             # 写入临时文件
             with open(temp_file, 'wb') as f:
-                remaining = size
+                remaining = target_size
                 while remaining > 0:
                     chunk_size = min(config.BUFFER_SIZE, remaining)
                     f.write(fill_block[:chunk_size])
@@ -702,6 +884,145 @@ class FileOperator:
             if 'temp_file' in locals() and os.path.exists(temp_file):
                 os.remove(temp_file)
             raise RuntimeError(f"全盘刷新失败: {str(e)}")
+            
+    @staticmethod
+    def continuous_full_refresh_file(path: str, target_unit_size: int) -> dict:
+        """持续全盘写入模式：直接写入目标文件，不再使用临时文件
+        
+        Args:
+            path: 文件路径
+            target_unit_size: 用户指定的写入容量（字节）
+            
+        Returns:
+            dict: 包含总写入容量和最高写入速度的统计信息
+        """
+        stats = {
+            "total_written": 0,
+            "max_speed_mbs": 0
+        }
+        
+        # 检查是否为系统保护目录
+        dir_path = os.path.dirname(path)
+        if "$RECYCLE.BIN" in dir_path.upper() or "SYSTEM VOLUME INFORMATION" in dir_path.upper():
+            print(f"警告: 跳过系统保护目录中的文件: {path}")
+            return stats
+        
+        # 保存原始的SIGINT处理函数
+        original_sigint_handler = signal.getsignal(signal.SIGINT)
+        
+        # 定义文件清理函数
+        def cleanup_file(signum=None, frame=None):
+            if os.path.exists(path):
+                try:
+                    print(f"\n正在清理文件: {path}")
+                    os.remove(path)
+                except Exception:
+                    pass
+            if signum is not None:
+                # 如果是信号触发的清理，恢复原始处理函数并重新触发
+                signal.signal(signal.SIGINT, original_sigint_handler)
+                os.kill(os.getpid(), signum)
+        
+        # 设置Ctrl+C信号处理
+        signal.signal(signal.SIGINT, cleanup_file)
+        
+        try:
+            print(f"\n开始写入文件: {path}")
+            # 创建填充块
+            fill_block = config.FULL_REFRESH_PATTERN * config.BUFFER_SIZE
+            
+            # 检查目录是否存在
+            if not os.path.exists(dir_path):
+                print(f"错误: 目录 {dir_path} 不存在")
+                raise RuntimeError(f"目标目录不存在: {dir_path}")
+            
+            # 检查是否有写入权限
+            if not os.access(dir_path, os.W_OK):
+                print(f"错误: 没有写入权限: {dir_path}")
+                raise RuntimeError(f"无写入权限: {dir_path}")
+            
+            # 清理可能存在的旧文件
+            if os.path.exists(path):
+                print(f"删除已存在的文件: {path}")
+                os.remove(path)
+            
+            # 准备写入数据
+            print(f"开始直接写入目标文件...")
+            with open(path, 'wb') as f:
+                start_time = time.time()
+                prev_time = start_time
+                prev_written = 0
+                
+                # 写入一个单位的容量
+                unit_start_time = time.time()
+                unit_written = 0
+                remaining = target_unit_size
+                
+                while remaining > 0:
+                    try:
+                        chunk_size = min(config.BUFFER_SIZE, remaining)
+                        f.write(fill_block[:chunk_size])
+                        unit_written += chunk_size
+                        remaining -= chunk_size
+                        
+                        # 每1秒显示一次写入速度
+                        current_time = time.time()
+                        if current_time - prev_time >= 1:
+                            elapsed = current_time - unit_start_time
+                            if elapsed > 0:
+                                speed_mbs = (unit_written / (1024 * 1024)) / elapsed
+                                print(f"\r当前写入速度: {speed_mbs:.2f} MB/s", end="", flush=True)
+                            prev_time = current_time
+                            
+                    except (IOError, OSError) as e:
+                        # 捕获磁盘空间不足或其他写入错误
+                        if "No space left on device" in str(e) or "磁盘空间不足" in str(e):
+                            print("\n磁盘空间已写满，停止写入")
+                            # 确保已写入的数据刷新到磁盘
+                            f.flush()
+                            os.fsync(f.fileno())
+                            # 更新统计信息
+                            stats["total_written"] = unit_written
+                            return stats
+                        else:
+                            # 其他错误重新抛出
+                            raise
+                
+                # 确保数据写入磁盘
+                f.flush()
+                os.fsync(f.fileno())
+                
+                # 计算最终写入速度
+                unit_time = time.time() - unit_start_time
+                if unit_time > 0:
+                    unit_speed_mbs = (unit_written / (1024 * 1024)) / unit_time
+                    stats["max_speed_mbs"] = unit_speed_mbs
+                    print(f"\r当前写入速度: {unit_speed_mbs:.2f} MB/s")
+                
+                # 更新统计信息
+                stats["total_written"] = unit_written
+                
+            # 验证文件大小
+            if os.path.exists(path):
+                actual_size = os.path.getsize(path)
+                print(f"文件写入完成，实际大小: {format_size(actual_size)}")
+                stats["total_written"] = actual_size
+                
+        except Exception as e:
+            # 出现异常时清理文件
+            if os.path.exists(path):
+                try:
+                    print(f"\n错误: {str(e)}")
+                    print(f"清理未完成的文件: {path}")
+                    os.remove(path)
+                except Exception:
+                    pass
+            raise
+        finally:
+            # 恢复原始的SIGINT处理函数
+            signal.signal(signal.SIGINT, original_sigint_handler)
+            
+        return stats
     
     @staticmethod
     def trim_file(path: str, size: int) -> bool:
@@ -874,16 +1195,50 @@ class FileOperator:
             
             # 根据模式选择处理逻辑
             if full_refresh:
-                # 全盘数据刷新模式
+                # 全盘数据刷新模式 - 使用持续写入功能
                 for attempt in range(config.MAX_RETRIES + 1):
                     try:
-                        # 使用FF值填充文件
-                        cls.full_refresh_file(path, size)
-                        
-                        # 计算处理速度
-                        process_time = time.time() - start_time
-                        if process_time > 0:
-                            result['speed'] = size / process_time / 1024**2
+                        # 检查是否设置了target_size（用户指定的写入单位）
+                        if hasattr(FileOperator, 'target_size'):
+                            # 使用持续写入模式
+                            print(f"\n开始持续写入模式，写入单位: {FileOperator.target_size / (1024**3):.1f}GB")
+                            print(f"目标文件: {path}")
+                            print("按Ctrl+C可随时停止写入")
+                            
+                            # 执行持续写入
+                            write_stats = cls.continuous_full_refresh_file(path, FileOperator.target_size)
+                            
+                            # 显示统计信息
+                            total_gb = write_stats["total_written"] / (1024**3)
+                            max_speed = write_stats["max_speed_mbs"]
+                            print(f"\n\n写入完成！")
+                            print(f"实际总写入容量: {total_gb:.2f} GB")
+                            print(f"最高写入速度: {max_speed:.2f} MB/s")
+                            
+                            # 更新结果统计
+                            result['speed'] = max_speed
+                            # 更新传入的stats对象
+                            stats.processed += 1
+                            return result
+                        else:
+                            # 如果没有设置target_size，使用原有的单文件刷新模式
+                            # 使用FF值填充文件
+                            cls.full_refresh_file(path, size)
+                            
+                            # 计算处理速度
+                            process_time = time.time() - start_time
+                            if process_time > 0:
+                                result['speed'] = size / process_time / 1024**2
+                            return result
+                    except KeyboardInterrupt:
+                        # 处理用户中断
+                        print("\n\n用户中断写入操作")
+                        # 清理临时文件
+                        if os.path.exists(temp_file) and not os.path.exists(path):
+                            try:
+                                os.remove(temp_file)
+                            except:
+                                pass
                         return result
                     except Exception as e:
                         error_type = type(e).__name__
@@ -1123,6 +1478,30 @@ class ApplicationController:
             min_days = 0  # 处理所有文件，不按时效过滤
             skip_small = False  # 不跳过小文件
             
+            # 只有在全盘刷新模式下才询问写入容量
+            if local_full_refresh:
+                print("\n请输入每个文件的写入容量 (1-100GB，默认50GB):")
+                
+                while True:
+                    capacity_input = input("请输入容量大小: ").strip()
+                    if not capacity_input:  # 空输入使用默认值50
+                        capacity = 50
+                        break
+                    
+                    try:
+                        capacity = int(capacity_input)
+                        if 1 <= capacity <= 100:
+                            break
+                        else:
+                            print("容量必须在1-100之间，请重新输入")
+                    except ValueError:
+                        print("请输入有效的数字")
+                
+                target_size = capacity * 1024**3  # 转换为字节，使用局部变量
+                print(f"已选择写入容量: {capacity}GB")
+                # 保存目标大小到FileOperator类的类变量
+                FileOperator.target_size = target_size
+            
             print(f"路径: {directory}")
             print(f"数据时效: {min_days} 天 (自动设置)")
             print(f"跳过小文件: {'是' if skip_small else '否'} (自动设置)")
@@ -1150,11 +1529,31 @@ class ApplicationController:
         self.dashboard.update_display(self.stats, "扫描中")
         LogManager.log_operation(f"开始扫描目录: {directory}, 最小天数: {min_days}")
         
+        # 添加调试信息
+        print(f"\n[调试信息]")
+        print(f"扫描目录: {directory}")
+        print(f"操作系统: {os.name}")
+        print(f"当前工作目录: {os.getcwd()}")
+        print(f"目录是否存在: {os.path.exists(directory)}")
+        print(f"是否具有读取权限: {os.access(directory, os.R_OK)}")
+        print(f"是否具有写入权限: {os.access(directory, os.W_OK)}")
+        
         try:
             target_files = self._collect_files(directory, min_days)
             total_files = len(target_files)
             self.stats.progress = 0.1  # 进入处理阶段初始进度
             
+            print(f"扫描完成，发现 {total_files} 个目标文件")
+            # 显示前几个文件作为示例
+            if target_files:
+                print(f"\n发现的文件示例:")
+                for i, file_path in enumerate(target_files[:3]):
+                    print(f"  {i+1}. {file_path}")
+                if len(target_files) > 3:
+                    print(f"  ... 等 {len(target_files)} 个文件")
+            else:
+                print("警告: 未发现任何目标文件！")
+                
             LogManager.log_operation(f"扫描完成，发现 {total_files} 个目标文件")
         except Exception as e:
             LogManager.log_operation(f"扫描目录失败: {str(e)}", "ERROR")
@@ -1177,6 +1576,9 @@ class ApplicationController:
                     continue
                 
                 # 提交任务到线程池 - 使用用户选择的本地模式变量
+                print(f"\n准备处理文件: {path}")
+                print(f"文件大小: {os.path.getsize(path)/1024/1024:.2f} MB")
+                print(f"使用模式: {'全盘刷新' if local_full_refresh else 'TRIM' if local_trim_mode else '智能'}")
                 future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, local_full_refresh, local_trim_mode)
                 futures.append(future)
                 
@@ -1423,8 +1825,19 @@ def main():
                            help='使用全盘数据刷新模式（将文件内容统一写入FF值）')
         parser.add_argument('--trim-mode', action='store_true',
                            help='使用真正的TRIM功能（通知SSD哪些数据块无效，提高写入性能）')
+        parser.add_argument('--test', action='store_true',
+                           help='测试文件写入功能')
+        parser.add_argument('--dir', type=str, default='H:',
+                           help='测试目录，默认为H:')
+        parser.add_argument('--size', type=int, default=50,
+                           help='测试文件大小(GB)，默认为50GB')
         
         args = parser.parse_args()
+        
+        # 如果是测试模式
+        if args.test:
+            test_write_functionality(args.dir, args.size)
+            return
         
         if args.create_test_files:
             Benchmark.create_test_files(args.test_dir)
