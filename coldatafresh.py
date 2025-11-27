@@ -828,6 +828,29 @@ class FullRefreshManager:
     """
     
     @staticmethod
+    def is_drive(directory: str) -> bool:
+        """
+        判断指定路径是否为整个盘符
+        
+        Args:
+            directory: 指定路径
+            
+        Returns:
+            bool: 是否为整个盘符
+        """
+        try:
+            if os.name == 'nt':
+                # Windows系统：判断是否为盘符格式（如 C: 或 C:\）
+                import re
+                return bool(re.match(r'^[a-zA-Z]:[\\/]?$', directory))
+            else:
+                # Linux系统：判断是否为根目录或挂载点
+                return directory == '/' or os.path.ismount(directory)
+        except Exception as e:
+            print(f"判断路径类型失败: {str(e)}")
+            return False
+    
+    @staticmethod
     def get_directory_stats(directory: str) -> tuple:
         """
         获取指定目录的总容量和已使用容量
@@ -845,6 +868,56 @@ class FullRefreshManager:
         except Exception as e:
             print(f"获取目录统计信息失败: {str(e)}")
             return 0, 0, 0
+    
+    @staticmethod
+    def format_drive(drive: str) -> bool:
+        """
+        格式化指定盘符
+        
+        Args:
+            drive: 盘符路径（如 "H:"）
+            
+        Returns:
+            bool: 格式化是否成功
+        """
+        try:
+            if os.name != 'nt':
+                print("格式化功能仅支持Windows系统")
+                return False
+            
+            import subprocess
+            
+            # 使用diskpart命令格式化盘符
+            diskpart_script = f"select volume {drive[0]}\nformat fs=ntfs quick"
+            
+            # 创建临时diskpart脚本文件
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                f.write(diskpart_script)
+                temp_script = f.name
+            
+            try:
+                # 执行diskpart命令
+                result = subprocess.run(
+                    ['diskpart', '/s', temp_script],
+                    capture_output=True,
+                    text=True,
+                    shell=True
+                )
+                
+                # 检查执行结果
+                if result.returncode == 0:
+                    print(f"盘符 {drive} 格式化成功")
+                    return True
+                else:
+                    print(f"盘符 {drive} 格式化失败: {result.stderr}")
+                    return False
+            finally:
+                # 删除临时脚本文件
+                os.unlink(temp_script)
+        except Exception as e:
+            print(f"格式化盘符失败: {str(e)}")
+            return False
     
     @staticmethod
     def backup_files(source_dir: str, backup_dir: str) -> bool:
@@ -968,6 +1041,11 @@ class FullRefreshManager:
             max_write_speed = 0.0
             file_count = 0
             
+            # 计算需要创建的文件数量
+            total_bytes, _, free_bytes = FullRefreshManager.get_directory_stats(directory)
+            max_files = FullRefreshManager.calculate_max_files(total_bytes, unit_size)
+            print(f"预计需要创建 {max_files} 个文件")
+            
             # 持续写入文件，直到填满可用空间
             while True:
                 # 检查可用空间
@@ -987,6 +1065,10 @@ class FullRefreshManager:
                     max_write_speed = write_stats["max_speed_mbs"]
                 
                 file_count += 1
+                
+                # 显示进度
+                progress = file_count / max_files if max_files > 0 else 0
+                print(f"已创建 {file_count} 个文件，进度: {progress:.1%}")
             
             return cumulative_capacity, max_write_speed
         except Exception as e:
@@ -1807,7 +1889,11 @@ class ApplicationController:
             # 执行完整的全盘刷新业务流程
             print("\n开始执行全盘刷新业务流程...")
             
-            # 1. 获取目录统计信息
+            # 1. 检查用户指定的目录是否为整个盘符
+            is_drive = FullRefreshManager.is_drive(directory)
+            print(f"\n检测到路径类型: {'整个盘符' if is_drive else '文件目录'}")
+            
+            # 2. 获取目录统计信息
             print("\n开始获取目录统计信息...")
             total_bytes, used_bytes, free_bytes = FullRefreshManager.get_directory_stats(directory)
             
@@ -1835,35 +1921,46 @@ class ApplicationController:
                 
                 if FullRefreshManager.backup_files(directory, backup_dir):
                     print("文件备份成功")
-                    
-                    # 删除原文件
-                    print("\n开始删除原文件...")
-                    for root, dirs, files in os.walk(directory, topdown=False):
-                        # 跳过系统保护目录
-                        if "$RECYCLE.BIN" in root.upper() or "SYSTEM VOLUME INFORMATION" in root.upper():
-                            continue
-                        
-                        # 删除文件
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            try:
-                                os.remove(file_path)
-                            except Exception as e:
-                                print(f"删除文件失败 {file_path}: {str(e)}")
-                        
-                        # 删除空目录
-                        for dir_name in dirs:
-                            dir_path = os.path.join(root, dir_name)
-                            try:
-                                os.rmdir(dir_path)
-                            except Exception as e:
-                                print(f"删除目录失败 {dir_path}: {str(e)}")
-                    
-                    print("原文件删除完成")
                 else:
                     print("文件备份失败，程序将退出")
                     input("按任意键返回主菜单...")
                     return self.execute(full_refresh, trim_mode)
+            
+            # 4. 根据是盘符还是目录，执行不同的清理操作
+            if is_drive:
+                # 如果是盘符，调用系统API进行格式化操作
+                print("\n开始格式化盘符...")
+                if FullRefreshManager.format_drive(directory):
+                    print("盘符格式化成功")
+                else:
+                    print("盘符格式化失败，程序将退出")
+                    input("按任意键返回主菜单...")
+                    return self.execute(full_refresh, trim_mode)
+            else:
+                # 如果是目录，删除目录下的所有文件
+                print("\n开始删除目录下的所有文件...")
+                for root, dirs, files in os.walk(directory, topdown=False):
+                    # 跳过系统保护目录
+                    if "$RECYCLE.BIN" in root.upper() or "SYSTEM VOLUME INFORMATION" in root.upper():
+                        continue
+                    
+                    # 删除文件
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            os.remove(file_path)
+                        except Exception as e:
+                            print(f"删除文件失败 {file_path}: {str(e)}")
+                    
+                    # 删除空目录
+                    for dir_name in dirs:
+                        dir_path = os.path.join(root, dir_name)
+                        try:
+                            os.rmdir(dir_path)
+                        except Exception as e:
+                            print(f"删除目录失败 {dir_path}: {str(e)}")
+                
+                print("目录清理完成")
             
             # 4. 获取写入单位大小
             unit_size = getattr(FileOperator, 'target_size', 50 * 1024**3)
