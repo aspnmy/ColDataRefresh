@@ -1,10 +1,28 @@
-# ColDataRefresh SSD冷数据维护系统 v4.4
+# ColDataRefresh SSD冷数据维护系统 v4.7.0
 
 ## 执行本程序 需要python3.12.0以上环境
 - 首次执行记得 先运行install_dependencies.bat 安装所有依赖
 智能检测固态硬盘的冷数据并解决冷数据掉速问题，带数据校验功能
 [English](/README_EN.md)
 - https://aspnmy.blog.csdn.net/article/details/150638290?spm=1011.2415.3001.5331
+
+## v4.7.0 更新内容
+- 修复了`full_refresh_file`模式，确保正确写入数据到磁盘
+- 修复了PyInstaller构建脚本问题，确保依赖文件正确打包
+- 确保日志保存在程序目录而不是临时目录，方便查询
+- 实现了完整的全盘刷新业务流程，包括文件备份/恢复和空间填充
+- 优化了全盘刷新业务流程：
+  - 先尝试格式化操作，失败后再进行文件删除操作
+  - TRIM操作放在最后一步执行，避免中间流程卡住
+- 添加了自动管理员权限提升，简化用户操作
+- 根据Windows版本优化了TRIM操作：
+  - Windows 11：执行ReTrim + SlabConsolidate + ReTrim组合操作
+  - Windows 10：只执行ReTrim操作
+  - Windows 10以下：使用DeviceIoControl方法执行TRIM操作
+- 添加了重复TRIM操作避免机制，提高效率
+- 增强了TRIM操作的用户提示，告知用户操作详情和注意事项
+- 修复了SSL证书验证失败的问题，确保程序能在各种环境下正常运行
+- 增强了日志记录和错误处理
 
 ## v4.4 更新内容
 - 实现真正的TRIM功能：通过操作系统API通知SSD哪些数据块无效，提高写入性能并延长SSD寿命

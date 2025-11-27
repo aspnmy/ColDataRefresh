@@ -23,6 +23,9 @@ import argparse
 # 尝试导入requests模块，如果不可用则设置标志
 try:
     import requests
+    # 禁用InsecureRequestWarning警告
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
@@ -576,6 +579,61 @@ class LogManager:
 # 初始化日志管理器，确保日志目录存在
 LogManager.ensure_log_directory()
 
+# 全局变量：已处理的驱动器列表，用于避免重复执行TRIM操作
+processed_drives = set()
+
+# 定义Windows版本检查函数
+def get_windows_version() -> tuple:
+    """
+    获取Windows系统版本号
+    
+    Returns:
+        tuple: (major, minor, build) - 系统版本号
+    """
+    try:
+        import sys
+        if sys.platform != 'win32':
+            return (0, 0, 0)
+        
+        # 获取Windows版本信息
+        version_info = sys.getwindowsversion()
+        return (version_info.major, version_info.minor, version_info.build)
+    except Exception as e:
+        LogManager.log_operation(f"获取Windows版本失败: {str(e)}", "WARNING")
+        return (0, 0, 0)
+
+# 检查是否为Windows 10及以上版本
+def is_windows_10_or_higher() -> bool:
+    """
+    检测当前Windows系统是否为Windows 10或更高版本
+    
+    Returns:
+        bool: 如果是Windows 10或更高版本返回True，否则返回False
+    """
+    try:
+        major, minor, build = get_windows_version()
+        # Windows 10的主要版本号是10.0
+        return (major, minor) >= (10, 0)
+    except Exception as e:
+        LogManager.log_operation(f"检测Windows版本失败: {str(e)}", "WARNING")
+        return False
+
+# 检查是否为Windows 11及以上版本
+def is_windows_11_or_higher() -> bool:
+    """
+    检测当前Windows系统是否为Windows 11或更高版本
+    
+    Returns:
+        bool: 如果是Windows 11或更高版本返回True，否则返回False
+    """
+    try:
+        major, minor, build = get_windows_version()
+        # Windows 11的主要版本号是10.0，内部版本号是22000或更高
+        return (major, minor) >= (10, 0) and build >= 22000
+    except Exception as e:
+        LogManager.log_operation(f"检测Windows版本失败: {str(e)}", "WARNING")
+        return False
+
 # 从GitHub获取网站信息
 def getWebSite():
     """
@@ -591,7 +649,8 @@ def getWebSite():
     # 步骤1：尝试从远程获取并更新本地文件
     if HAS_REQUESTS:
         try:
-            response = requests.get(remote_url, timeout=5)
+            # 禁用SSL证书验证以解决证书验证失败问题
+            response = requests.get(remote_url, timeout=5, verify=False)
             response.raise_for_status()
             
             # 将远程内容保存到本地文件
@@ -630,7 +689,8 @@ def check_latest_version():
         
     try:
         releases_url = "https://api.github.com/repos/aspnmy/ColDataRefresh/releases/latest"
-        response = requests.get(releases_url, timeout=5)
+        # 禁用SSL证书验证以解决证书验证失败问题
+        response = requests.get(releases_url, timeout=5, verify=False)
         response.raise_for_status()
         
         data = response.json()
@@ -1362,36 +1422,81 @@ class FileOperator:
             trim_size = min(config.TRIM_BLOCK_SIZE, size)
             
             if os.name == 'nt':  # Windows实现
-                # 对于Windows 10及以上版本，使用系统自带的Optimize drives命令行工具(defrag.exe)
-                if 'IS_WINDOWS_10_OR_HIGHER' in globals() and IS_WINDOWS_10_OR_HIGHER:
-                    import subprocess
+                # 获取文件所在的驱动器
+                drive = os.path.splitdrive(path)[0]
+                if not drive:  # 如果没有驱动器信息，使用当前目录的驱动器
+                    drive = os.path.splitdrive(os.getcwd())[0]
+                
+                if drive:
+                    # 检查是否已经处理过该驱动器，避免重复执行TRIM操作
+                    global processed_drives
+                    if drive in processed_drives:
+                        LogManager.log_operation(f"驱动器{drive}已经执行过TRIM操作，跳过本次操作")
+                        return True
                     
-                    # 获取文件所在的驱动器
-                    drive = os.path.splitdrive(path)[0]
-                    if not drive:  # 如果没有驱动器信息，使用当前目录的驱动器
-                        drive = os.path.splitdrive(os.getcwd())[0]
+                    # 添加到已处理驱动器列表
+                    processed_drives.add(drive)
                     
-                    if drive:  # 确保获取到了驱动器
-                        LogManager.log_operation(f"在Windows 10+系统上使用PowerShell的Optimize-Volume对{drive}执行优化操作")
+                    # 添加TRIM操作提示信息
+                    print(f"\n" + "="*60)
+                    print(f"正在对驱动器 {drive} 进行 SSD固态盘实时TRIM优化操作")
+                    print("="*60)
+                    print("注意事项：")
+                    print("1. 后台执行时间预计需要10-30分钟")
+                    print("2. 30分钟内请不要对该SSD固态硬盘进行断电操作")
+                    print("3. TRIM操作有助于提高SSD性能并延长使用寿命")
+                    print("4. 操作期间可以继续使用计算机，但建议减少对该驱动器的大量读写")
+                    print("="*60)
+                    
+                    # 获取Windows版本信息
+                    is_win11 = is_windows_11_or_higher()
+                    is_win10 = is_windows_10_or_higher()
+                    
+                    LogManager.log_operation(f"在{platform.system()}系统上对{drive}执行TRIM操作，Windows 11: {is_win11}, Windows 10: {is_win10}")
+                    
+                    # 标记是否执行了PowerShell操作
+                    powershell_executed = False
+                    
+                    try:
+                        import subprocess
                         
-                        try:
-                            # 首先执行ReTrim操作
-                            if not optimize_volume_retrim(drive):
-                                LogManager.log_operation("ReTrim操作失败，尝试回退到原方法", "WARNING")
-                                return False
+                        if is_win11 or is_win10:
+                            # Windows 11或10: 使用PowerShell执行TRIM操作
+                            powershell_executed = True
                             
-                            # 然后执行SlabConsolidate操作
-                            if not optimize_volume_slab_consolidate(drive):
-                                LogManager.log_operation("SlabConsolidate操作失败，但继续执行", "WARNING")
+                            if is_win11:
+                                # Windows 11: 使用最佳TRIM策略
+                                LogManager.log_operation(f"Windows 11系统，执行最佳TRIM策略")
+                                
+                                # 执行ReTrim + SlabConsolidate + ReTrim组合操作
+                                # 首先执行ReTrim操作
+                                if not optimize_volume_retrim(drive):
+                                    LogManager.log_operation("ReTrim操作失败，尝试回退到原方法", "WARNING")
+                                    return False
+                                
+                                # 然后执行SlabConsolidate操作
+                                if not optimize_volume_slab_consolidate(drive):
+                                    LogManager.log_operation("SlabConsolidate操作失败，但继续执行", "WARNING")
+                                
+                                # 最后再次执行ReTrim操作
+                                if not optimize_volume_retrim_again(drive):
+                                    LogManager.log_operation("第二次ReTrim操作失败，但已完成主要优化", "WARNING")
+                            else:
+                                # Windows 10: 只执行ReTrim操作
+                                LogManager.log_operation(f"Windows 10系统，执行ReTrim操作")
+                                
+                                # 只执行ReTrim操作
+                                if not optimize_volume_retrim(drive):
+                                    LogManager.log_operation("ReTrim操作失败，尝试回退到原方法", "WARNING")
+                                    return False
                             
-                            # 最后再次执行ReTrim操作
-                            if not optimize_volume_retrim_again(drive):
-                                LogManager.log_operation("第二次ReTrim操作失败，但已完成主要优化", "WARNING")
-                            
-                            LogManager.log_operation("Optimize-Volume系列操作完成")
+                            LogManager.log_operation(f"对驱动器{drive}的TRIM操作完成")
                             return True
-                        except Exception as e:
-                            LogManager.log_operation(f"执行Optimize-Volume时出错: {str(e)}", "WARNING")
+                    except Exception as e:
+                        LogManager.log_operation(f"执行TRIM操作时出错: {str(e)}", "WARNING")
+                        # 如果PowerShell命令失败，继续执行下面的DeviceIoControl方法
+                    
+                    # Windows 10以下版本或PowerShell操作失败，继续执行DeviceIoControl方法
                 
                 # Windows 10以下版本或defrag.exe失败时，使用原来的DeviceIoControl方法
                 LogManager.log_operation(f"使用DeviceIoControl对文件{path}执行TRIM操作")
@@ -1868,7 +1973,7 @@ class ApplicationController:
             print(f"扫描完成，发现 {total_files} 个目标文件")
             # 显示前几个文件作为示例
             if target_files:
-                print(f"\n发现的文件示例:")
+                print(f"\n发现的文件列表:")
                 for i, file_path in enumerate(target_files[:3]):
                     print(f"  {i+1}. {file_path}")
                 if len(target_files) > 3:
@@ -1927,17 +2032,18 @@ class ApplicationController:
                     return self.execute(full_refresh, trim_mode)
             
             # 4. 根据是盘符还是目录，执行不同的清理操作
+            format_success = False
             if is_drive:
-                # 如果是盘符，调用系统API进行格式化操作
+                # 如果是盘符，先尝试格式化操作
                 print("\n开始格式化盘符...")
                 if FullRefreshManager.format_drive(directory):
                     print("盘符格式化成功")
+                    format_success = True
                 else:
-                    print("盘符格式化失败，程序将退出")
-                    input("按任意键返回主菜单...")
-                    return self.execute(full_refresh, trim_mode)
-            else:
-                # 如果是目录，删除目录下的所有文件
+                    print("盘符格式化失败，将尝试删除文件操作...")
+            
+            # 如果格式化失败或不是盘符，执行文件删除操作
+            if not format_success:
                 print("\n开始删除目录下的所有文件...")
                 for root, dirs, files in os.walk(directory, topdown=False):
                     # 跳过系统保护目录
@@ -1962,18 +2068,18 @@ class ApplicationController:
                 
                 print("目录清理完成")
             
-            # 4. 获取写入单位大小
+            # 6. 获取写入单位大小
             unit_size = getattr(FileOperator, 'target_size', 50 * 1024**3)
             
-            # 5. 填满可用空间
+            # 7. 填满可用空间
             print(f"\n开始填满可用空间，写入单位大小: {unit_size / 1024**3:.0f}GB")
             cumulative_capacity, max_write_speed = FullRefreshManager.fill_available_space(directory, unit_size)
             
-            # 6. 清理工作目录
+            # 8. 清理工作目录
             work_dir = os.path.join(directory, "$aspnmytools")
             FullRefreshManager.cleanup(work_dir)
             
-            # 7. 恢复文件（如果需要）
+            # 9. 恢复文件（如果需要）
             if keep_files and backup_dir and os.path.exists(backup_dir):
                 print("\n开始恢复文件...")
                 if FullRefreshManager.restore_files(backup_dir, directory):
@@ -1985,6 +2091,28 @@ class ApplicationController:
             elif backup_dir:
                 # 删除备份目录
                 FullRefreshManager.cleanup(backup_dir, keep_backup=False)
+            
+            # 10. 执行TRIM优化操作（放在最后一步，避免中间流程卡住）
+            print("\n开始执行TRIM优化操作...")
+            # 创建一个临时文件用于触发TRIM操作
+            trim_temp_file = os.path.join(directory, ".trim_temp")
+            try:
+                # 创建一个小文件
+                with open(trim_temp_file, 'wb') as f:
+                    f.write(b'\x00' * 1024)  # 1KB的临时文件
+                
+                # 调用trim_file函数执行TRIM操作
+                FileOperator.trim_file(trim_temp_file, 1024)
+                print("TRIM优化操作完成")
+            except Exception as e:
+                print(f"TRIM操作失败: {str(e)}")
+            finally:
+                # 清理临时文件
+                if os.path.exists(trim_temp_file):
+                    try:
+                        os.remove(trim_temp_file)
+                    except:
+                        pass
             
             # 更新统计信息
             self.stats.processed = 1
@@ -2216,6 +2344,28 @@ class Benchmark:
 
 
 def main():
+    # 自动获取管理员权限
+    if os.name == 'nt':
+        try:
+            # 检查是否已经是管理员权限
+            import ctypes
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+            if not is_admin:
+                print("正在请求管理员权限...")
+                # 使用ctypes请求管理员权限
+                ctypes.windll.shell32.ShellExecuteW(
+                    None,  # 父窗口句柄
+                    "runas",  # 操作类型
+                    sys.executable,  # 应用程序路径
+                    ' '.join(['"' + arg + '"' for arg in sys.argv]),  # 命令行参数
+                    None,  # 工作目录
+                    1  # 显示方式（SW_SHOWNORMAL）
+                )
+                return  # 退出当前进程，等待新的管理员权限进程启动
+        except Exception as e:
+            print(f"自动获取管理员权限失败: {str(e)}")
+            print("请手动以管理员权限运行程序")
+    
     # 设置控制台窗口标题
     set_window_title(f"冷数据维护工具 v{CURRENT_VERSION} - SSD冷数据刷新与基准测试")
     
