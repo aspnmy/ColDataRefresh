@@ -1,0 +1,20 @@
+{
+  "operations": [
+    {
+      "timestamp": "2025-11-28T00:19:26.441875",
+      "duration_seconds": 10.23,
+      "stats": {
+        "scanned": 11,
+        "processed": 11,
+        "large": 2,
+        "medium": 1,
+        "small": 8,
+        "corrupted": 0,
+        "final_speed": 0.0
+      }
+    }
+  ],
+  "total_scanned": 11,
+  "total_processed": 11,
+  "total_corrupted": 0
+}
