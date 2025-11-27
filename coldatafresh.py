@@ -386,11 +386,33 @@ def set_window_title(title: str = None) -> None:
         ctypes.windll.kernel32.SetConsoleTitleW(title)
 
 # ============================== 系统配置模块 ==============================
+
+# 确定程序运行目录
+# 对于PyInstaller打包后的程序，获取可执行文件所在目录
+# 对于正常Python环境，获取脚本所在目录
+def get_program_dir():
+    """
+    获取程序的实际运行目录
+    
+    Returns:
+        str: 程序运行目录
+    """
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller打包后的环境
+        # 获取可执行文件所在目录
+        if sys.platform == 'win32':
+            return os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            return os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        # 正常Python环境
+        return os.path.dirname(os.path.abspath(__file__))
+
 @dataclass(frozen=True)
 class Config:
-    # 获取脚本所在目录
-    SCRIPT_DIR: str = os.path.dirname(os.path.abspath(__file__))
-    # 日志文件保存在脚本同级目录下
+    # 获取程序运行目录
+    SCRIPT_DIR: str = get_program_dir()
+    # 日志文件保存在程序运行目录下
     LOG_FILE: str = os.path.join(SCRIPT_DIR, "refresh_log.json")
     CORRUPTED_LOG: str = os.path.join(SCRIPT_DIR, "corrupted_files.log")
     ERROR_LOG: str = os.path.join(SCRIPT_DIR, "error.log")
@@ -867,22 +889,39 @@ class FileOperator:
                 f.flush()
                 os.fsync(f.fileno())
             
-            # 先删除原文件，再重命名临时文件（更可靠的替换方式）
-            if os.path.exists(path):
-                os.remove(path)
-            os.rename(temp_file, path)
+            # 验证写入的数据量
+            if processed_size != target_size:
+                raise RuntimeError(f"写入数据量不匹配: 预期 {target_size} 字节，实际写入 {processed_size} 字节")
+            
+            # 使用原子操作替换文件
+            os.replace(temp_file, path)
             
             # 再次打开文件确认内容已更改
             with open(path, 'rb') as f:
-                # 读取前1024字节验证
+                # 验证文件大小
+                actual_size = os.path.getsize(path)
+                if actual_size != target_size:
+                    raise RuntimeError(f"文件大小不匹配: 预期 {target_size} 字节，实际 {actual_size} 字节")
+                
+                # 读取并验证前1024字节
                 first_chunk = f.read(1024)
                 if not first_chunk or any(b != config.FULL_REFRESH_PATTERN[0] for b in first_chunk):
                     raise RuntimeError("文件内容验证失败，数据可能未被正确替换")
+                
+                # 验证文件末尾
+                f.seek(-min(1024, actual_size), os.SEEK_END)
+                last_chunk = f.read()
+                if any(b != config.FULL_REFRESH_PATTERN[0] for b in last_chunk):
+                    raise RuntimeError("文件末尾内容验证失败，数据可能未被正确替换")
             
             return True
-        except (IOError, OSError) as e:
+        except Exception as e:
+            # 确保临时文件被清理
             if 'temp_file' in locals() and os.path.exists(temp_file):
-                os.remove(temp_file)
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
             raise RuntimeError(f"全盘刷新失败: {str(e)}")
             
     @staticmethod

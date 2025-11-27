@@ -214,3 +214,4 @@ test_data/
 *.pyd
 *.spec
 # End of https://www.toptal.com/developers/gitignore/api/python
+.venv/
