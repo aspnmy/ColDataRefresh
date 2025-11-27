@@ -216,3 +216,5 @@ test_data/
 # End of https://www.toptal.com/developers/gitignore/api/python
 .venv/
 build/
+
+.trae/
