@@ -821,6 +821,207 @@ class Dashboard:
         
         self.last_update = time.time()
 
+# ============================== 全盘刷新功能模块 ==============================
+class FullRefreshManager:
+    """
+    全盘刷新功能管理器，负责实现完整的全盘刷新业务流程
+    """
+    
+    @staticmethod
+    def get_directory_stats(directory: str) -> tuple:
+        """
+        获取指定目录的总容量和已使用容量
+        
+        Args:
+            directory: 指定目录路径
+            
+        Returns:
+            tuple: (总容量字节, 已使用容量字节, 可用容量字节)
+        """
+        try:
+            total_bytes, free_bytes = get_disk_space(directory)
+            used_bytes = total_bytes - free_bytes
+            return total_bytes, used_bytes, free_bytes
+        except Exception as e:
+            print(f"获取目录统计信息失败: {str(e)}")
+            return 0, 0, 0
+    
+    @staticmethod
+    def backup_files(source_dir: str, backup_dir: str) -> bool:
+        """
+        备份文件到临时目录
+        
+        Args:
+            source_dir: 源目录路径
+            backup_dir: 备份目录路径
+            
+        Returns:
+            bool: 备份是否成功
+        """
+        try:
+            import shutil
+            
+            # 创建备份目录
+            if not os.path.exists(backup_dir):
+                os.makedirs(backup_dir)
+            
+            # 遍历源目录，备份所有文件
+            for root, dirs, files in os.walk(source_dir):
+                # 跳过系统保护目录
+                if "$RECYCLE.BIN" in root.upper() or "SYSTEM VOLUME INFORMATION" in root.upper():
+                    continue
+                
+                # 创建相对路径
+                rel_path = os.path.relpath(root, source_dir)
+                if rel_path == '.':
+                    rel_path = ''
+                
+                # 创建目标目录
+                target_dir = os.path.join(backup_dir, rel_path)
+                if not os.path.exists(target_dir):
+                    os.makedirs(target_dir)
+                
+                # 复制文件
+                for file in files:
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(target_dir, file)
+                    shutil.copy2(src_file, dst_file)
+            
+            return True
+        except Exception as e:
+            print(f"备份文件失败: {str(e)}")
+            return False
+    
+    @staticmethod
+    def restore_files(backup_dir: str, target_dir: str) -> bool:
+        """
+        从临时目录恢复文件
+        
+        Args:
+            backup_dir: 备份目录路径
+            target_dir: 目标目录路径
+            
+        Returns:
+            bool: 恢复是否成功
+        """
+        try:
+            import shutil
+            
+            # 遍历备份目录，恢复所有文件
+            for root, dirs, files in os.walk(backup_dir):
+                # 创建相对路径
+                rel_path = os.path.relpath(root, backup_dir)
+                if rel_path == '.':
+                    rel_path = ''
+                
+                # 创建目标目录
+                target_subdir = os.path.join(target_dir, rel_path)
+                if not os.path.exists(target_subdir):
+                    os.makedirs(target_subdir)
+                
+                # 复制文件
+                for file in files:
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(target_subdir, file)
+                    shutil.copy2(src_file, dst_file)
+            
+            return True
+        except Exception as e:
+            print(f"恢复文件失败: {str(e)}")
+            return False
+    
+    @staticmethod
+    def calculate_max_files(total_capacity: int, unit_size: int) -> int:
+        """
+        计算需要创建的文件数量
+        
+        Args:
+            total_capacity: 总容量（字节）
+            unit_size: 单个文件大小（字节）
+            
+        Returns:
+            int: 文件数量
+        """
+        if unit_size <= 0:
+            return 0
+        return total_capacity // unit_size
+    
+    @staticmethod
+    def fill_available_space(directory: str, unit_size: int) -> tuple:
+        """
+        填满可用空间
+        
+        Args:
+            directory: 指定目录路径
+            unit_size: 单个文件大小（字节）
+            
+        Returns:
+            tuple: (累积填入容量字节, 最大写入速度 MB/s)
+        """
+        try:
+            # 创建工作目录
+            work_dir = os.path.join(directory, "$aspnmytools")
+            if not os.path.exists(work_dir):
+                os.makedirs(work_dir)
+            
+            cumulative_capacity = 0
+            max_write_speed = 0.0
+            file_count = 0
+            
+            # 持续写入文件，直到填满可用空间
+            while True:
+                # 检查可用空间
+                _, _, free_bytes = FullRefreshManager.get_directory_stats(directory)
+                if free_bytes < unit_size:
+                    break
+                
+                # 创建文件路径
+                file_path = os.path.join(work_dir, f"refresh_{file_count}.dat")
+                
+                # 写入文件
+                write_stats = FileOperator.continuous_full_refresh_file(file_path, unit_size)
+                
+                # 更新统计信息
+                cumulative_capacity += write_stats["total_written"]
+                if write_stats["max_speed_mbs"] > max_write_speed:
+                    max_write_speed = write_stats["max_speed_mbs"]
+                
+                file_count += 1
+            
+            return cumulative_capacity, max_write_speed
+        except Exception as e:
+            print(f"填满可用空间失败: {str(e)}")
+            return 0, 0.0
+    
+    @staticmethod
+    def cleanup(work_dir: str, backup_dir: str = None, keep_backup: bool = False) -> bool:
+        """
+        清理临时文件和目录
+        
+        Args:
+            work_dir: 工作目录路径
+            backup_dir: 备份目录路径
+            keep_backup: 是否保留备份
+            
+        Returns:
+            bool: 清理是否成功
+        """
+        try:
+            import shutil
+            
+            # 清理工作目录
+            if os.path.exists(work_dir):
+                shutil.rmtree(work_dir)
+            
+            # 清理备份目录（如果不保留）
+            if backup_dir and not keep_backup and os.path.exists(backup_dir):
+                shutil.rmtree(backup_dir)
+            
+            return True
+        except Exception as e:
+            print(f"清理临时文件失败: {str(e)}")
+            return False
+
 # ============================== 文件处理模块 ==============================
 class FileOperator:
     @staticmethod
@@ -1598,56 +1799,152 @@ class ApplicationController:
             LogManager.log_operation(f"扫描目录失败: {str(e)}", "ERROR")
             raise
 
-        # 文件处理阶段 - 多线程优化
+        # 文件处理阶段
         start_time = time.time()
         
-        # 内存优化：分批处理文件，避免内存溢出
-        batch_size = max(1, len(target_files) // (config.MAX_WORKERS * 2))
-        processed_count = 0
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
-            # 分批提交任务
-            futures = []
-            for path in target_files:
-                if skip_small and os.path.getsize(path) < config.SKIP_SMALL:
-                    self.stats.small += 1
-                    processed_count += 1
-                    continue
-                
-                # 提交任务到线程池 - 使用用户选择的本地模式变量
-                print(f"\n准备处理文件: {path}")
-                print(f"文件大小: {os.path.getsize(path)/1024/1024:.2f} MB")
-                print(f"使用模式: {'全盘刷新' if local_full_refresh else 'TRIM' if local_trim_mode else '智能'}")
-                future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, local_full_refresh, local_trim_mode)
-                futures.append(future)
-                
-                # 内存控制：限制同时运行的任务数量
-                if len(futures) >= config.MAX_WORKERS * 2:
-                    # 等待部分任务完成
-                    for future in concurrent.futures.as_completed(futures[:config.MAX_WORKERS]):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            print(f"\n处理失败: {str(e)}")
-                        processed_count += 1
-                        self.stats.processed = processed_count
-                        self.stats.progress = processed_count / total_files if total_files else 0
-                        self.dashboard.update_display(self.stats, "处理中")
-                    
-                    futures = futures[config.MAX_WORKERS:]
+        # 检查是否为全盘刷新模式
+        if local_full_refresh:
+            # 执行完整的全盘刷新业务流程
+            print("\n开始执行全盘刷新业务流程...")
             
-            # 等待剩余任务完成
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"\n处理失败: {error_msg}")
-                    LogManager.log_operation(f"任务执行异常: {error_msg}", "WARNING")
-                processed_count += 1
-                self.stats.processed = processed_count
-                self.stats.progress = processed_count / total_files if total_files else 0
-                self.dashboard.update_display(self.stats, "处理中")
+            # 1. 获取目录统计信息
+            print("\n开始获取目录统计信息...")
+            total_bytes, used_bytes, free_bytes = FullRefreshManager.get_directory_stats(directory)
+            
+            if total_bytes == 0:
+                print("无法获取目录统计信息，程序将退出")
+                input("按任意键返回主菜单...")
+                return self.execute(full_refresh, trim_mode)
+            
+            print(f"磁盘信息:")
+            print(f"  总容量: {format_size(total_bytes)}")
+            print(f"  已使用容量: {format_size(used_bytes)}")
+            print(f"  可用容量: {format_size(free_bytes)}")
+            
+            # 2. 询问用户是否保留已使用空间中的文件
+            keep_files = input("\n是否保留已使用空间中的文件？ (Y/N, 默认Y): ").strip().lower()
+            keep_files = keep_files != 'n' and keep_files != 'no'
+            
+            # 3. 备份文件（如果需要）
+            backup_dir = None
+            if keep_files and used_bytes > 0:
+                print("\n开始备份文件...")
+                backup_dir = os.path.join("d:", "$aspnmytools")
+                if not os.path.exists(backup_dir):
+                    os.makedirs(backup_dir)
+                
+                if FullRefreshManager.backup_files(directory, backup_dir):
+                    print("文件备份成功")
+                    
+                    # 删除原文件
+                    print("\n开始删除原文件...")
+                    for root, dirs, files in os.walk(directory, topdown=False):
+                        # 跳过系统保护目录
+                        if "$RECYCLE.BIN" in root.upper() or "SYSTEM VOLUME INFORMATION" in root.upper():
+                            continue
+                        
+                        # 删除文件
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            try:
+                                os.remove(file_path)
+                            except Exception as e:
+                                print(f"删除文件失败 {file_path}: {str(e)}")
+                        
+                        # 删除空目录
+                        for dir_name in dirs:
+                            dir_path = os.path.join(root, dir_name)
+                            try:
+                                os.rmdir(dir_path)
+                            except Exception as e:
+                                print(f"删除目录失败 {dir_path}: {str(e)}")
+                    
+                    print("原文件删除完成")
+                else:
+                    print("文件备份失败，程序将退出")
+                    input("按任意键返回主菜单...")
+                    return self.execute(full_refresh, trim_mode)
+            
+            # 4. 获取写入单位大小
+            unit_size = getattr(FileOperator, 'target_size', 50 * 1024**3)
+            
+            # 5. 填满可用空间
+            print(f"\n开始填满可用空间，写入单位大小: {unit_size / 1024**3:.0f}GB")
+            cumulative_capacity, max_write_speed = FullRefreshManager.fill_available_space(directory, unit_size)
+            
+            # 6. 清理工作目录
+            work_dir = os.path.join(directory, "$aspnmytools")
+            FullRefreshManager.cleanup(work_dir)
+            
+            # 7. 恢复文件（如果需要）
+            if keep_files and backup_dir and os.path.exists(backup_dir):
+                print("\n开始恢复文件...")
+                if FullRefreshManager.restore_files(backup_dir, directory):
+                    print("文件恢复成功")
+                    # 删除备份目录
+                    FullRefreshManager.cleanup(backup_dir, keep_backup=False)
+                else:
+                    print("文件恢复失败，请手动恢复")
+            elif backup_dir:
+                # 删除备份目录
+                FullRefreshManager.cleanup(backup_dir, keep_backup=False)
+            
+            # 更新统计信息
+            self.stats.processed = 1
+            self.stats.progress = 1.0
+            self.stats.speed = max_write_speed
+            
+            # 更新界面
+            self.dashboard.update_display(self.stats, "完成")
+        else:
+            # 常规模式或TRIM模式：使用原有的多线程处理逻辑
+            # 内存优化：分批处理文件，避免内存溢出
+            batch_size = max(1, len(target_files) // (config.MAX_WORKERS * 2))
+            processed_count = 0
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=config.MAX_WORKERS) as executor:
+                # 分批提交任务
+                futures = []
+                for path in target_files:
+                    if skip_small and os.path.getsize(path) < config.SKIP_SMALL:
+                        self.stats.small += 1
+                        processed_count += 1
+                        continue
+                    
+                    # 提交任务到线程池 - 使用用户选择的本地模式变量
+                    print(f"\n准备处理文件: {path}")
+                    print(f"文件大小: {os.path.getsize(path)/1024/1024:.2f} MB")
+                    print(f"使用模式: {'TRIM' if local_trim_mode else '智能'}")
+                    future = executor.submit(FileOperator.refresh_file, path, self.stats, self.dashboard, local_full_refresh, local_trim_mode)
+                    futures.append(future)
+                    
+                    # 内存控制：限制同时运行的任务数量
+                    if len(futures) >= config.MAX_WORKERS * 2:
+                        # 等待部分任务完成
+                        for future in concurrent.futures.as_completed(futures[:config.MAX_WORKERS]):
+                            try:
+                                future.result()
+                            except Exception as e:
+                                print(f"\n处理失败: {str(e)}")
+                            processed_count += 1
+                            self.stats.processed = processed_count
+                            self.stats.progress = processed_count / total_files if total_files else 0
+                            self.dashboard.update_display(self.stats, "处理中")
+                        
+                        futures = futures[config.MAX_WORKERS:]
+                
+                # 等待剩余任务完成
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        error_msg = str(e)
+                        print(f"\n处理失败: {error_msg}")
+                        LogManager.log_operation(f"任务执行异常: {error_msg}", "WARNING")
+                    processed_count += 1
+                    self.stats.processed = processed_count
+                    self.stats.progress = processed_count / total_files if total_files else 0
+                    self.dashboard.update_display(self.stats, "处理中")
 
         # 结束阶段
         elapsed_time = time.time() - start_time
@@ -1656,20 +1953,35 @@ class ApplicationController:
         # 保存操作摘要到日志
         log_file_path = LogManager.save_operation_summary(self.stats, elapsed_time)
         
-        print(f"\n操作总结: 处理文件 {self.stats.processed} 个 (共发现 {self.stats.scanned} 个)")
-        print(f"总耗时: {elapsed_time:.2f} 秒")
-        print(f"平均速度: {self.stats.speed:.2f} MB/秒")
-        print(f"错误记录: {config.CORRUPTED_LOG}")
-        if full_refresh:
-            print("⚠️  全盘数据刷新模式已完成")
+        # 显示结果
+        print("\n" + "="*60)
+        print("          操作完成！")
+        print("="*60)
         
-        if log_file_path:
-            print(f"操作摘要: {log_file_path}")
+        if local_full_refresh:
+            # 全盘刷新模式的结果显示
+            print(f"操作模式: 全盘刷新")
+            print(f"总耗时: {elapsed_time:.2f} 秒")
+            print(f"最大写入速度: {self.stats.speed:.2f} MB/s")
+            print(f"操作日志: {log_file_path}")
+            print(f"错误记录: {config.CORRUPTED_LOG}")
+        else:
+            # 常规模式或TRIM模式的结果显示
+            print(f"操作模式: {'TRIM模式' if local_trim_mode else '智能模式'}")
+            print(f"总耗时: {elapsed_time:.2f} 秒")
+            print(f"处理文件数: {self.stats.processed} 个 (共发现 {self.stats.scanned} 个)")
+            print(f"大文件: {self.stats.large}, 中等文件: {self.stats.medium}, 小文件: {self.stats.small}")
+            print(f"损坏文件: {self.stats.corrupted}")
+            print(f"平均处理速度: {self.stats.speed:.2f} MB/s")
+            print(f"操作日志: {log_file_path}")
+            print(f"错误记录: {config.CORRUPTED_LOG}")
+        
+        print("="*60)
         
         # 记录操作完成
-        if full_refresh:
+        if local_full_refresh:
             mode = "全盘刷新"
-        elif trim_mode:
+        elif local_trim_mode:
             mode = "TRIM模式"
         else:
             mode = "常规刷新"
