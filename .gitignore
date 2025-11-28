@@ -218,3 +218,6 @@ test_data/
 build/
 
 .trae/
+coldatafresh/
+
+target/
