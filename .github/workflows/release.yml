@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build-${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: coldatafresh
+            archive: tar.gz
+            cross: false
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: i686-unknown-linux-musl
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: armv7-unknown-linux-gnueabihf
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: ubuntu-latest
+            target: arm-unknown-linux-gnueabihf
+            bin: coldatafresh
+            archive: tar.gz
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bin: coldatafresh
+            archive: tar.gz
+            cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: coldatafresh
+            archive: tar.gz
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: coldatafresh.exe
+            archive: zip
+            cross: false
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            bin: coldatafresh.exe
+            archive: zip
+            cross: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup cross (cross-compilation)
+        if: matrix.cross == true
+        shell: bash
+        run: |
+          curl -fsSL https://github.com/cross-rs/cross/releases/latest/download/cross-x86_64-unknown-linux-musl.tar.gz | tar -xz -C /tmp
+          mv /tmp/cross /usr/local/bin/cross
+          cross --version
+
+      - name: Build (native)
+        if: matrix.cross == false
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross == true
+        shell: bash
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Prepare artifact directory
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" dist/
+          if [ -f README_EN.md ]; then cp README_EN.md dist/; fi
+          if [ -f LICENSE ]; then cp LICENSE dist/; fi
+
+      - name: Create tar.gz archive
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          cd dist
+          tar -czf "../coldatafresh-${{ github.ref_name }}-${{ matrix.target }}.tar.gz" .
+          cd ..
+          ls -la "coldatafresh-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+
+      - name: Create zip archive
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/*" -DestinationPath "coldatafresh-${{ github.ref_name }}-${{ matrix.target }}.zip"
+          Get-Item "coldatafresh-${{ github.ref_name }}-${{ matrix.target }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coldatafresh-${{ github.ref_name }}-${{ matrix.target }}
+          path: coldatafresh-${{ github.ref_name }}-${{ matrix.target }}.*
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display artifacts
+        run: ls -R artifacts/
+
+      - name: Create Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: 'artifacts/**/*'
+          generate_release_notes: true
+          prerelease: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

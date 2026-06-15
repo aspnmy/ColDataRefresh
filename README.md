@@ -70,6 +70,35 @@ cargo build --release
 ### 预编译二进制
 从 [Releases](https://github.com/aspnmy/ColDataRefresh/releases) 页面下载最新版本。
 
+## CI/CD 自动发布
+
+项目使用 GitHub Actions 实现跨平台自动发布。
+
+触发发布：
+```bash
+git checkout v5.0
+git tag v5.0.0
+git push origin v5.0.0
+```
+
+构建矩阵（11 个目标平台）：
+
+| 平台 | 目标三元组 | 运行时库 | CPU 架构 | 适用场景 |
+|------|-----------|---------|---------|---------|
+| Linux | `x86_64-unknown-linux-gnu` | glibc | x86_64 (64位) | 桌面/服务器主流 |
+| Linux | `x86_64-unknown-linux-musl` | musl | x86_64 (64位) | Alpine/Docker 静态编译 |
+| Linux | `i686-unknown-linux-musl` | musl | i686 (32位) | 旧硬件/嵌入式 |
+| Linux | `aarch64-unknown-linux-gnu` | glibc | ARMv8 (64位) | 树莓派/ARM服务器 |
+| Linux | `aarch64-unknown-linux-musl` | musl | ARMv8 (64位) | ARM Alpine/Docker |
+| Linux | `armv7-unknown-linux-gnueabihf` | glibc | ARMv7 (32位) | 树莓派3及以下 |
+| Linux | `arm-unknown-linux-gnueabihf` | glibc | ARMv6 (32位) | 树莓派Zero/旧ARM |
+| macOS | `x86_64-apple-darwin` | — | Intel Mac | MacBook Pro/Air (Intel) |
+| macOS | `aarch64-apple-darwin` | — | Apple Silicon | MacBook Pro/Air (M芯片) |
+| Windows | `x86_64-pc-windows-msvc` | MSVC | x86_64 (64位) | Win10/11 主流 |
+| Windows | `i686-pc-windows-msvc` | MSVC | i686 (32位) | Win10/11 32位兼容 |
+
+> **glibc vs musl 说明：** glibc 版本性能更优，适合桌面/服务器环境；musl 版本静态链接，不依赖系统运行时，适合 Docker/Alpine 容器。ARM 版本覆盖树莓派全系列（Zero 到 5）。
+
 ## 系统支持
 
 | 平台 | 支持情况 |

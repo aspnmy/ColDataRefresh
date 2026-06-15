@@ -70,6 +70,35 @@ Requires Rust 2021 Edition or later.
 ### Pre-built Binaries
 Download the latest release from the [Releases](https://github.com/aspnmy/ColDataRefresh/releases) page.
 
+## CI/CD
+
+This project uses GitHub Actions for automated cross-platform release builds.
+
+Trigger a release:
+```bash
+git checkout v5.0
+git tag v5.0.0
+git push origin v5.0.0
+```
+
+Build matrix (11 targets):
+
+| Platform | Target Triple | Libc | CPU Arch | Use Case |
+|----------|--------------|------|----------|----------|
+| Linux | `x86_64-unknown-linux-gnu` | glibc | x86_64 (64-bit) | Desktop/Server主流 |
+| Linux | `x86_64-unknown-linux-musl` | musl | x86_64 (64-bit) | Alpine/Docker 静态编译 |
+| Linux | `i686-unknown-linux-musl` | musl | i686 (32-bit) | 旧硬件/嵌入式 |
+| Linux | `aarch64-unknown-linux-gnu` | glibc | ARMv8 (64-bit) | 树莓派/ARM服务器 |
+| Linux | `aarch64-unknown-linux-musl` | musl | ARMv8 (64-bit) | ARM Alpine/Docker |
+| Linux | `armv7-unknown-linux-gnueabihf` | glibc | ARMv7 (32-bit) | 树莓派3及以下 |
+| Linux | `arm-unknown-linux-gnueabihf` | glibc | ARMv6 (32-bit) | 树莓派Zero/旧ARM |
+| macOS | `x86_64-apple-darwin` | — | Intel Mac | MacBook Pro/Air (Intel) |
+| macOS | `aarch64-apple-darwin` | — | Apple Silicon | MacBook Pro/Air (M芯片) |
+| Windows | `x86_64-pc-windows-msvc` | MSVC | x86_64 (64-bit) | Win10/11 主流 |
+| Windows | `i686-pc-windows-msvc` | MSVC | i686 (32-bit) | Win10/11 32位兼容 |
+
+> **glibc vs musl:** glibc 版本性能更优，适合桌面/服务器；musl 版本静态链接，适合 Docker/Alpine 容器环境。ARM 版本覆盖树莓派全系列（Zero~5）。
+
 ## System Requirements
 
 | Platform | Support |
