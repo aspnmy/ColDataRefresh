@@ -70,6 +70,25 @@ cargo build --release
 ### 预编译二进制
 从 [Releases](https://github.com/aspnmy/ColDataRefresh/releases) 页面下载最新版本。
 
+## CI/CD 自动发布
+
+项目使用 GitHub Actions 实现跨平台自动发布。
+
+触发发布：
+```bash
+git checkout v5.0
+git tag v5.0.0
+git push origin v5.0.0
+```
+
+工作流覆盖 11 个目标平台：
+| 平台 | 构建目标 |
+|------|---------|
+| Linux (gnu) | `x86_64`, `aarch64`, `armv7`, `arm` |
+| Linux (musl) | `x86_64`, `i686`, `aarch64` |
+| macOS | `x86_64`, `aarch64` |
+| Windows | `x86_64`, `i686` |
+
 ## 系统支持
 
 | 平台 | 支持情况 |

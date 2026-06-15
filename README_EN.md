@@ -70,6 +70,25 @@ Requires Rust 2021 Edition or later.
 ### Pre-built Binaries
 Download the latest release from the [Releases](https://github.com/aspnmy/ColDataRefresh/releases) page.
 
+## CI/CD
+
+This project uses GitHub Actions for automated cross-platform release builds.
+
+Trigger a release:
+```bash
+git checkout v5.0
+git tag v5.0.0
+git push origin v5.0.0
+```
+
+The workflow builds for 11 targets:
+| Platform | Targets |
+|----------|---------|
+| Linux (gnu) | `x86_64`, `aarch64`, `armv7`, `arm` |
+| Linux (musl) | `x86_64`, `i686`, `aarch64` |
+| macOS | `x86_64`, `aarch64` |
+| Windows | `x86_64`, `i686` |
+
 ## System Requirements
 
 | Platform | Support |
