@@ -1,87 +1,105 @@
-# ColDataRefresh SSD Cold Data Maintenance System v5.0.0
-Intelligently detects cold data on SSD and solves the cold data crash problem with data validation.
+# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0
 
-## v5.0.0 Update Content
-- Completely rewritten in Rust language, providing higher performance and reliability
-- Retained all original features with performance optimizations
-- Supports concurrent processing to improve data refresh speed
-- Enhanced cross-platform compatibility, supporting Windows and Linux
-- Optimized file system operations to reduce I/O overhead
-- Improved error handling mechanism to enhance program stability
-- Simplified build process using Cargo for dependency management and building
+[中文](README.md)
 
-## v4.7.0 Update Content (Historical Version)
-- Fixed the `full_refresh_file` mode to ensure data is correctly written to disk
-- Fixed PyInstaller build script issues to ensure dependency files are correctly packaged
-- Ensured logs are saved in the program directory instead of temporary directories for easier querying
-- Implemented a complete full refresh business flow, including file backup/restore and space filling
-- Optimized the full refresh business flow:
-  - First attempts formatting operation, then falls back to file deletion if formatting fails
-  - TRIM operation is executed at the end to avoid blocking intermediate processes
-- Added automatic admin privilege elevation to simplify user operations
-- Optimized TRIM operations based on Windows version:
-  - Windows 11: Executes ReTrim + SlabConsolidate + ReTrim combination operation
-  - Windows 10: Only executes ReTrim operation
-  - Windows 10 and below: Uses DeviceIoControl method to execute TRIM operations
-- Added duplicate TRIM operation avoidance mechanism to improve efficiency
-- Enhanced TRIM operation user prompts to inform users about operation details and precautions
-- Fixed SSL certificate verification failure issue to ensure the program can run normally in various environments
-- Enhanced logging and error handling
+Intelligently detects cold data on SSDs and prevents read slowdown caused by charge leakage on NAND cells. Written in Rust for maximum performance and reliability.
 
-### What is Cold Data
-Cold data refers to data that has been stored on the hard drive for a long time (e.g., half a year or even longer) and has not been rewritten or updated, which is intuitively expressed in terms of files, but in reality is reflected in the physical level of the corresponding storage unit of the file. Usually, documents, videos, music, pictures and other static data stored on the hard drive for a long time are cold data, and even any files that have been read by the operating system, programmes and games over a long period of time without modification or update will ‘grow’ to be cold data in the future (hot or incremental updates are already very mature nowadays, but they can be used for a long time). Generally speaking, updates to systems, games, and applications will only update the parts that need to be changed, and leave the parts that don't need to be changed untouched).
-**Note that the formation of cold data is only related to writing, not reading, even if a file is read frequently, but not modified to write, it is possible to become cold data** (this is also the reason why some people react to the slow loading of the games that they often play because of the cold data falling speed).
+## Features
 
-### What problems can cold data cause
-Cold data on an SSD can cause slow read speeds, and in extreme cases, even unreadable.
+### Mode 1: Cold Data Refresh (Smart Mode)
+Refreshes files that haven't been accessed beyond a configurable age threshold (default 365 days). Each file is read, its data is verified via CRC32, written back in-place with 0xFF then restored, and re-verified. This rewrites the physical NAND cells, restoring their charge level and read performance.
 
-> Most SSD firmwares, like Samsung's, will move cold data around to ‘warm it up’ during idle periods, but some manufacturers' firmwares do not have this feature. This is why this tool was developed.
-> Note: The Trim function/defragmentation of SSDs does not alleviate the slowdown of cold data reading.
+**Safe — no data loss.**
 
-### How to determine/resolve the cold data read dropout problem of my hard drive
+### Mode 2: Full Disk Refresh
+A complete NAND cell-level refresh cycle:
+1. **Backup** — All files are backed up to another drive (auto-detected, prioritizes D:)
+2. **Delete** — Original files are removed to free up space
+3. **Overwrite** — The freed space is overwritten with 0xFF pattern for full NAND cell refresh
+4. **Cleanup** — Temporary fill files are removed
+5. **Restore** — Data is restored from backup with **current timestamps** (files appear "fresh" to the OS)
+6. **TRIM** — Final TRIM optimization is executed
 
-The easiest thing to do is to find a file that has been lying on your hard drive for a long time (e.g. more than two years) and has not been modified, copy it to another hard drive, and observe whether the copying speed has dropped?
-Copy the file back, and the problem is solved (because the file becomes ‘newly’ written and is no longer cold data).
+> ⚠️ Toggleable backup: choose whether to preserve data. If backup is skipped, restored data cannot be recovered.
 
-You can also use this tool, which will automatically determine if your file is cold or not.
+### Mode 3: Real-time TRIM
+Directly issues TRIM commands to the SSD, bypassing the OS idle-time scheduling. Safe for routine maintenance every 3 months. Irreversibly releases space marked as deleted.
 
-### Features of this tool/differences with `DiskFresh` and other tools
+## Usage
 
-1. `DiskFresh` is also designed to deal with cold data, but DiskFresh is based on the more underlying `Sector` level of the disc to do a full overwrite. The disadvantage is that it takes a long time to refresh, and will refresh unnecessary non-cold data blocks, which may reduce the life of the hard disc; **This tool is based on the file system level, and only refreshes the detected cold data, and comes with CRC file checksum, which is safer and faster. **,
-2. This tool supports saving the file refresh progress, you can exit at any time and continue the data refresh operation the next time
-3. This tool is open source.
-4. Developed in Rust language, providing higher performance and reliability
+```bash
+# Interactive menu (no args)
+coldatafresh
 
-### How to use
+# Smart mode: refresh files older than 180 days
+coldatafresh -p "D:\Data" -a 180
 
-> **Please right click the programme - `Run as administrator` **, this is necessary, you can not grant permission, but specific files may be accessed or overwrite failed.
+# Full disk refresh
+coldatafresh -f -p "D:\Data"
 
-1. **Build from source code**:
-   - Ensure Rust development environment is installed (recommended to use rustup for installation)
-   - Clone the repository: `git clone https://github.com/aspnmy/ColDataRefresh.git`
-   - Switch to v5.0 branch: `git checkout v5.0`
-   - Enter project directory: `cd ColDataRefresh/coldatafresh`
-   - Build the project: `cargo build --release`
-   - Run the program: `cargo run --release` or directly run the generated executable file
+# Execute TRIM only
+coldatafresh -t -p "D:\Data"
 
-2. The program provides three modes:
-   - Smart mode: Automatically detects and refreshes cold data, preserving the original file content
-   - Full disk cold data activation mode: Replaces file content with specific values, **this mode will cause file content loss, use with caution! **
-   - TRIM mode: Notifies SSD which data blocks are invalid, improves write performance and extends SSD life
+# Verbose logging
+coldatafresh -v -p "D:\Data" -a 365
+```
 
-3. Enter the directory you want to scan for cold data, e.g. `D:\DL` or the whole hard drive `D:\` (Windows users can select the folder and press `Ctrl+Shift+C` to copy the directory address), press enter.
+### CLI Options
 
-4. Enter the number of days of cold data, e.g. `300`, the programme will scan files that have been last modified more than 300 days ago. (Entering 0 will scan all files in the directory.) Press Enter to run the program.
+| Flag | Description |
+|------|-------------|
+| `-p`, `--path` | Target directory (default: `.`) |
+| `-a`, `--age` | File age threshold in days |
+| `-f`, `--full-refresh` | Full disk refresh mode |
+| `-t`, `--trim` | TRIM optimization mode |
+| `-v`, `--verbose` | Enable detailed logging |
+| `-s`, `--skip-smaller` | Skip files smaller than N MB |
 
-5. **Important: If you need to exit the programme while it is running, please press `Ctrl+C` on the console first to send the terminate command, otherwise it may cause data loss! **
+## Installation
 
-### TRIM Function Description
+### From Source
+```bash
+git clone https://github.com/aspnmy/ColDataRefresh.git
+cd ColDataRefresh
+cargo build --release
+./target/release/coldatafresh
+```
 
-TRIM is an advanced SSD maintenance feature that can significantly improve write performance and extend SSD life by notifying the solid-state drive which data blocks are no longer valid. The TRIM function implemented by this tool:
+Requires Rust 2021 Edition or later.
 
-- Communicates directly with SSD via operating system API, more efficient than file system level TRIM
-- Supports Windows and Linux platforms
-- Automatically applies TRIM commands to relevant data blocks during data refresh
-- No formatting or low-level operations required, safe and reliable
+### Pre-built Binaries
+Download the latest release from the [Releases](https://github.com/aspnmy/ColDataRefresh/releases) page.
 
-> Note: TRIM functionality requires hardware and operating system support, please ensure your SSD and operating system support TRIM commands.
+## System Requirements
+
+| Platform | Support |
+|----------|---------|
+| Windows 10/11 | ✅ Full support (NTFS, ReFS) |
+| Linux | ✅ Full support (ext4, XFS, Btrfs) |
+
+## Technical Details
+
+- **Language**: Rust 2021 Edition
+- **Concurrency**: Rayon lock-free parallel processing
+- **Data Integrity**: CRC32 checksum before and after every write
+- **Logging**: Centralized log system with operation, error, and corruption reports
+- **Signal Handling**: Graceful Ctrl+C shutdown with interrupted file logging
+- **No runtime dependencies** — single static binary
+
+## Changelog
+
+### v5.0.0 — Rust Rewrite
+- Complete rewrite from Python to Rust
+- Thread-safe architecture (`OnceLock` + `Mutex`, no `static mut`)
+- Full disk refresh: backup → delete → overwrite → restore (with timestamp refresh) → TRIM
+- CLI arguments for non-interactive / scripted use
+- Real-time progress dashboard
+- Cross-platform: Windows + Linux
+
+## License
+
+MIT License — see [LICENSE](LICENSE).
+
+## Author
+
+**aspnmy** — [Blog](https://aspnmy.blog.csdn.net/)

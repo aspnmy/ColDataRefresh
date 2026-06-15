@@ -221,3 +221,6 @@ build/
 coldatafresh/
 
 target/
+# Runtime data
+refresh_log.json
+error.log
