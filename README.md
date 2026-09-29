@@ -1,3 +1,11 @@
+# ColDataRefresh — SSD 冷数据维护系统 v6.0 beta 一些说明
+- v6.0版本主要用于对 大模型业务中 进行offlineload模式下把大量数据卸载到ssd中的这些数据进行定向维护，拼合碎片，均匀分配ssd热区，延长ssd的寿命
+- 此版本主要对接agent助手，内置MCP_server 或者以标准openai接口协议对接，以skill或mcp的形式和任意agent-cli对接，定期对ssd进行维护，此版本开始以后将不在面向人类用户(没有交互菜单)
+- 建议docker部署 ，不要用二进制裸跑，它的操作权限是很高的，一旦操作将数据完全丢失。
+- v6.0开始的版本将在我们自己的git上进行维护：**https://git.t2be.cn/aspnmy/ColDataRefresh.git**
+- v6.0版本开始 将提供i18n-语义包，需要其他语言的，请对i18n-zh.lang进行翻译即可 
+- 如需预览v6.0版本请向邮箱写邮件说明应用场景，将给予我们内部仓库的协作者只读权限
+
 # ColDataRefresh — SSD 冷数据维护系统 v5.0
 
 [English](README_EN.md)
