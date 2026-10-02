@@ -1,3 +1,5 @@
+//! 进度仪表盘与结果汇总渲染。
+
 use std::time::{Duration, Instant};
 
 use crate::config;
@@ -75,10 +77,11 @@ impl Dashboard {
         let h_line = h.repeat(70);
 
         let header = Terminal::colored(
-            " SSD掉速激活-冷数据维护系统 v5.0.0 作者:support@e2bank.cn By Rust",
+            " SSD掉速激活-冷数据维护系统 v5.0.2 作者:support@e2bank.cn By Rust",
             37,
             44,
         );
+        // 双语副标题（窄终端下可能被截断，不影响功能）
 
         println!("\n{}", h_line);
         println!("{:^70}", header);
@@ -91,11 +94,11 @@ impl Dashboard {
         let elapsed = self.start_time.elapsed().as_secs_f64();
 
         let mode_text = if self.full_refresh {
-            "全盘刷新模式"
+            "全盘刷新模式 (Full Refresh)"
         } else if self.trim_mode {
-            "TRIM模式"
+            "TRIM模式 (TRIM)"
         } else {
-            "智能模式"
+            "智能模式 (Smart)"
         };
 
         let progress_bar = {
@@ -106,55 +109,56 @@ impl Dashboard {
 
         let lines = [
             format!("{} 智能检测固态硬盘的冷数据并解决冷数据掉速问题。", v),
+            format!("{} (Detect & refresh cold data to fix SSD slowdown)", v),
             format!("{} GitHub: https://github.com/aspnmy/ColDataRefresh.git", v),
-            format!("{} 工作路径: {}  ", v, self.working_directory),
-            format!("{} 操作模式: {}  ", v, Terminal::colored(mode_text, 32, 44)),
+            format!("{} 工作路径 (Working dir): {}  ", v, self.working_directory),
+            format!("{} 操作模式 (Mode): {}  ", v, Terminal::colored(mode_text, 32, 44)),
             format!(
-                "{} 数据时效: {} 天, 跳过小文件: {}  ",
+                "{} 数据时效 (Age): {} 天/days, 跳过小文件 (skip small): {}  ",
                 v,
                 self.min_days,
-                if self.skip_small { "是" } else { "否" }
+                if self.skip_small { "是/yes" } else { "否/no" }
             ),
             format!(
-                "{} 缓冲区: {} MB",
+                "{} 缓冲区 (Buffer): {} MB",
                 v, self.buffer_size_mb
             ),
             format!(
-                "{} 数据量: {}/{}",
+                "{} 数据量 (Data): {}/{}",
                 v,
                 crate::config::format_size(stats.processed_bytes),
                 crate::config::format_size(stats.total_bytes.max(stats.processed_bytes)),
             ),
             format!(
-                "{} 运行阶段: {} 耗时: {:.1}s",
+                "{} 运行阶段 (Phase): {} 耗时 (Elapsed): {:.1}s",
                 v,
                 Terminal::fg(phase, 33),
                 elapsed
             ),
             format!(
-                "{} 处理进度: {} {:.1}%",
+                "{} 处理进度 (Progress): {} {:.1}%",
                 v,
                 progress_bar,
                 stats.progress * 100.0
             ),
             format!(
-                "{} 文件进度: [{}]",
+                "{} 文件进度 (File): [{}]",
                 v,
                 "▓".repeat((self.sub_progress * 20.0) as usize)
                     + &"░".repeat(20_usize.saturating_sub((self.sub_progress * 20.0) as usize)),
             ),
-            format!("{} 发现文件: {}", v, stats.scanned),
-            format!("{} 处理速度: {:.1} MB/s", v, stats.speed),
+            format!("{} 发现文件 (Scanned): {}", v, stats.scanned),
+            format!("{} 处理速度 (Speed): {:.1} MB/s", v, stats.speed),
             format!(
-                "{} 文件分类: 大(>100MB)({}) 中(10-100MB)({}) 小(<10MB)({})",
+                "{} 文件分类 (Size): 大/Large(>100MB)({}) 中/Medium(10-100MB)({}) 小/Small(<10MB)({})",
                 v, stats.large, stats.medium, stats.small
             ),
             format!(
-                "{} 损坏的文件: {}",
+                "{} 损坏的文件 (Corrupted): {}",
                 v,
                 Terminal::colored(&stats.corrupted.to_string(), 31, 44)
             ),
-            format!("{} 按 Ctrl+C 退出程序", v),
+            format!("{} 按 Ctrl+C 退出程序 (Press Ctrl+C to exit)", v),
         ];
 
         for line in &lines {
@@ -171,33 +175,33 @@ impl Dashboard {
         let eq = "=".repeat(60);
 
         println!("\n{}", eq);
-        println!("          操作完成！");
+        println!("          操作完成！(Operation Completed)");
         println!("{}", eq);
 
         if self.full_refresh {
-            println!("操作模式: 全盘刷新");
-            println!("总耗时: {:.2} 秒", elapsed);
-            println!("最大写入速度: {:.2} MB/s", stats.speed);
+            println!("操作模式 (Mode): 全盘刷新 (Full Refresh)");
+            println!("总耗时 (Elapsed): {:.2} 秒/s", elapsed);
+            println!("最大写入速度 (Max speed): {:.2} MB/s", stats.speed);
         } else if self.trim_mode {
-            println!("操作模式: TRIM模式");
-            println!("总耗时: {:.2} 秒", elapsed);
+            println!("操作模式 (Mode): TRIM模式 (TRIM)");
+            println!("总耗时 (Elapsed): {:.2} 秒/s", elapsed);
         } else {
-            println!("操作模式: 智能模式");
-            println!("总耗时: {:.2} 秒", elapsed);
+            println!("操作模式 (Mode): 智能模式 (Smart)");
+            println!("总耗时 (Elapsed): {:.2} 秒/s", elapsed);
             println!(
-                "处理文件数: {} 个 (共发现 {} 个)",
+                "处理文件数 (Processed): {} 个 (共发现/total {} 个)",
                 stats.processed, stats.scanned
             );
             println!(
-                "大文件: {}, 中等文件: {}, 小文件: {}",
+                "大文件 (Large): {}, 中等文件 (Medium): {}, 小文件 (Small): {}",
                 stats.large, stats.medium, stats.small
             );
-            println!("损坏文件: {}", stats.corrupted);
-            println!("平均处理速度: {:.2} MB/s", stats.speed);
+            println!("损坏文件 (Corrupted): {}", stats.corrupted);
+            println!("平均处理速度 (Avg speed): {:.2} MB/s", stats.speed);
         }
 
-        println!("操作日志: {}", log_file);
-        println!("错误记录: {}", config::config().corrupted_log.display());
+        println!("操作日志 (Log): {}", log_file);
+        println!("错误记录 (Error log): {}", config::config().corrupted_log.display());
         println!("{}", eq);
     }
 }

@@ -1,3 +1,5 @@
+//! 全盘刷新业务流程：备份 → 删除 → 填充 → 恢复 → TRIM。
+
 use std::path::Path;
 
 use crate::config::format_size;
@@ -21,9 +23,9 @@ impl FullRefresh {
 
         // 1. 获取磁盘统计信息
         let (_total, used, free) = platform::get_disk_space(dir_path);
-        println!("磁盘信息:");
-        println!("  已使用: {}", format_size(used));
-        println!("  可用: {}", format_size(free));
+        println!("磁盘信息 (Disk info):");
+        println!("  已使用 (used): {}", format_size(used));
+        println!("  可用 (free): {}", format_size(free));
 
         // 2. 备份文件（如果需要）
         let backup_dir = if keep_files {
@@ -31,52 +33,52 @@ impl FullRefresh {
             let backup = match find_backup_drive(directory) {
                 Some(drive) => drive.join("$aspnmytools"),
                 None => {
-                    println!("❌ 未找到可用的备份盘（需要与目标不同的硬盘），终止全盘刷新");
+                    println!("❌ 未找到可用的备份盘 (no backup drive found, must differ from target)，终止全盘刷新 (aborting)");
                     return;
                 }
             };
 
             if let Err(e) = std::fs::create_dir_all(&backup) {
-                println!("❌ 创建备份目录失败: {}，终止全盘刷新以保护数据", e);
+                println!("❌ 创建备份目录失败 (create backup dir failed): {}，终止全盘刷新 (aborting to protect data)", e);
                 return;
             }
-            println!("\n正在备份文件到 {}...", backup.display());
+            println!("\n正在备份文件到 (Backing up to) {}...", backup.display());
 
             if backup_files(directory, &backup) {
-                println!("文件备份成功");
+                println!("文件备份成功 (Backup succeeded)");
                 Some(backup)
             } else {
-                println!("❌ 文件备份失败，终止全盘刷新以保护数据");
+                println!("❌ 文件备份失败 (backup failed)，终止全盘刷新 (aborting to protect data)");
                 return;
             }
         } else {
-            println!("\n用户选择不保留文件，数据将无法恢复");
+            println!("\n用户选择不保留文件，数据将无法恢复 (not keeping files, data unrecoverable)");
             None
         };
 
         // 3. 已备份，删除目标目录中的原始文件
-        println!("\n正在删除目标目录中的原始文件...");
+        println!("\n正在删除目标目录中的原始文件... (Deleting original files...)");
         match delete_directory_contents(dir_path) {
             Err(e) => {
-                println!("❌ 删除失败: {}", e);
-                println!("   请手动删除目标目录中的文件后再执行全盘刷新");
+                println!("❌ 删除失败 (delete failed): {}", e);
+                println!("   请手动删除目标目录中的文件后再执行全盘刷新 (delete manually, then retry)");
                 return;
             }
             Ok((success, failure)) => {
                 if success > 0 || failure > 0 {
-                    println!("删除结果: 成功 {} 个, 失败 {} 个", success, failure);
+                    println!("删除结果 (Delete result): 成功/ok {} 个, 失败/failed {} 个", success, failure);
                     if failure > 0 {
-                        println!("⚠️  部分文件删除失败，可能影响填充效果");
+                        println!("⚠️  部分文件删除失败 (partial delete failure)，可能影响填充效果");
                     }
                 } else {
-                    println!("目录为空，无需删除");
+                    println!("目录为空，无需删除 (directory empty, nothing to delete)");
                 }
-                println!("原始文件已删除，空间已释放");
+                println!("原始文件已删除，空间已释放 (originals deleted, space freed)");
             }
         }
 
         // 4. 填充空间（覆写原文件释放的空间 + 可选填充空闲空间）
-        println!("\n开始填充空间，目录大小: {}，空闲空间填充: {}",
+        println!("\n开始填充空间 (Filling)，目录大小 (dir size): {}，空闲空间填充 (fill free): {}",
                  format_size(dir_size), if fill_free { "是" } else { "否" });
         let result = fill_available_space(directory, unit_size, dir_size, fill_free, write_buf_kb);
         let (cumulative, max_speed) = result;
@@ -84,37 +86,37 @@ impl FullRefresh {
         // 4.5 删除填充文件，释放空间用于恢复
         let work_dir = dir_path.join("$aspnmytools");
         if work_dir.exists() {
-            println!("\n正在删除填充文件...");
+            println!("\n正在删除填充文件... (Deleting fill files...)");
             match std::fs::remove_dir_all(&work_dir) {
-                Ok(()) => println!("填充文件已删除"),
-                Err(e) => println!("⚠️  删除填充文件失败: {}", e),
+                Ok(()) => println!("填充文件已删除 (fill files deleted)"),
+                Err(e) => println!("⚠️  删除填充文件失败 (delete fill files failed): {}", e),
             }
         }
 
         // 5. 恢复文件（如果需要）
         if let Some(ref backup) = backup_dir {
             if backup.exists() {
-                println!("\n正在恢复文件...");
+                println!("\n正在恢复文件... (Restoring files...)");
                 if restore_files(backup, directory) {
-                    println!("文件恢复成功");
+                    println!("文件恢复成功 (Restore succeeded)");
                     let _ = std::fs::remove_dir_all(backup);
                 } else {
-                    println!("文件恢复失败，请手动从 {} 恢复", backup.display());
+                    println!("文件恢复失败 (restore failed)，请手动从 (manual restore from) {} 恢复", backup.display());
                 }
             }
         } else if keep_files {
-            println!("\n⚠️  未备份文件，无法恢复");
+            println!("\n⚠️  未备份文件，无法恢复 (no backup, cannot restore)");
         }
 
         // 6. 执行最终 TRIM
-        println!("\n开始执行最终 TRIM 优化...");
+        println!("\n开始执行最终 TRIM 优化... (Running final TRIM...)");
         if let Some(device) = platform::resolve_device_name(directory) {
             platform::trim_volume(&device);
         }
 
-        println!("\n全盘刷新完成!");
-        println!("累积写入容量: {}", format_size(cumulative));
-        println!("最高写入速度: {:.2} MB/s", max_speed);
+        println!("\n全盘刷新完成! (Full refresh completed)");
+        println!("累积写入容量 (Total written): {}", format_size(cumulative));
+        println!("最高写入速度 (Max speed): {:.2} MB/s", max_speed);
     }
 }
 
@@ -399,7 +401,7 @@ fn fill_available_space(directory: &str, unit_size: u64, dir_size: u64,
                 );
             }
             Err(e) => {
-                println!("\n写入失败: {}", e);
+                println!("\n写入失败 (write failed): {}", e);
                 break;
             }
         }

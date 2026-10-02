@@ -1,3 +1,5 @@
+//! 日志记录器（操作日志 / 错误日志）。
+
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::sync::Mutex;

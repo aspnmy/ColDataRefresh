@@ -1,3 +1,5 @@
+//! 文件扫描与冷数据刷新（读写/覆写）核心操作。
+
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;

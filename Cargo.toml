@@ -1,7 +1,10 @@
 [package]
 name = "coldatafresh"
-version = "5.0.0"
+version = "5.0.2"
 edition = "2021"
+license = "Apache-2.0"
+description = "SSD 冷数据维护工具 — 智能检测并刷新固态硬盘冷数据，缓解掉速 (Cold data maintenance for SSDs)"
+repository = "https://github.com/aspnmy/ColDataRefresh"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

@@ -1,3 +1,5 @@
+//! 跨平台适配：磁盘空间、设备解析、TRIM、管理员检测。
+
 use std::path::Path;
 use std::process::Command;
 

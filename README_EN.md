@@ -1,4 +1,4 @@
-# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0
+# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.2
 
 [中文](README.md)
 
@@ -31,29 +31,44 @@ Directly issues TRIM commands to the SSD, bypassing the OS idle-time scheduling.
 # Interactive menu (no args)
 coldatafresh
 
+# CLI (non-interactive) mode: requires explicit --cli and a mandatory -p
 # Smart mode: refresh files older than 180 days
-coldatafresh -p "D:\Data" -a 180
+coldatafresh --cli -p "/data" -a 180
 
-# Full disk refresh
-coldatafresh -f -p "D:\Data"
+# Full disk refresh (destructive — -y required)
+coldatafresh --cli -p "/data" -f -y
 
-# Execute TRIM only
-coldatafresh -t -p "D:\Data"
+# Execute TRIM only (destructive — -y required)
+coldatafresh --cli -p "/data" -t -y
 
-# Verbose logging
-coldatafresh -v -p "D:\Data" -a 365
+# Verbose logging + skip files smaller than 10MB
+coldatafresh --cli -p "/data" -a 365 -s 10 -v
 ```
+
+> **Interactive vs non-interactive:** running without `--cli` opens the interactive menu (same behavior as v5.0); with `--cli` the program never reads stdin and exits with an error when a required argument is missing (exit code `2`) — suitable for scripting / unattended use.
 
 ### CLI Options
 
 | Flag | Description |
 |------|-------------|
-| `-p`, `--path` | Target directory (default: `.`) |
-| `-a`, `--age` | File age threshold in days |
+| `--cli` | Enter CLI (non-interactive) mode; `-p` is mandatory |
+| `-p`, `--path` | Target directory (required in `--cli` mode; ignored in interactive mode) |
+| `-a`, `--age` | File age threshold in days (required in smart mode) |
 | `-f`, `--full-refresh` | Full disk refresh mode |
 | `-t`, `--trim` | TRIM optimization mode |
-| `-v`, `--verbose` | Enable detailed logging |
+| `-y`, `--yes` | Confirmation for destructive operations (required with `-f` / `-t` under `--cli`) |
+| `-b`, `--buffer-size` | Processing buffer size in MB (effective under `--cli`) |
 | `-s`, `--skip-smaller` | Skip files smaller than N MB |
+| `-v`, `--verbose` | Enable detailed logging |
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Completed with failures |
+| `2` | Argument error (missing args, directory not found, destructive op without `-y`) |
+| `130` | Interrupted by user (Ctrl+C) |
 
 ## Installation
 
@@ -117,6 +132,19 @@ Build matrix (11 targets):
 
 ## Changelog
 
+### v5.0.2 — CLI Mode & Bilingual Text
+- **Genuine CLI (non-interactive) mode**: explicitly triggered by `--cli`, never reads stdin — suitable for scripting / unattended use
+- `-p/--path` now actually takes effect under `--cli` (previously the flag was never wired up and every flow still prompted on stdin)
+- **Destructive-operation gate**: full disk refresh / TRIM under `--cli` require the explicit `-y/--yes` flag
+- **Missing arguments now exit with an error** (exit code `2`) instead of falling back to interactive prompts
+- New `-b/--buffer-size` option; `-v/--verbose` now wired to log level control
+- Standardized exit codes: `0` success / `1` completed with failures / `2` argument error / `130` user interrupt
+- **Fixed false TRIM success report**: previously always displayed "✅ success" regardless of outcome; now reports the real return value
+- **UI and prompts are now bilingual** (Chinese with English in parentheses); interactive mode behavior is unchanged
+- Source comments unified as `///` doc comments / `//!` module comments for rustdoc
+
+### v5.0.1 — Internal Revision
+
 ### v5.0.0 — Rust Rewrite
 - Complete rewrite from Python to Rust
 - Thread-safe architecture (`OnceLock` + `Mutex`, no `static mut`)
@@ -127,7 +155,7 @@ Build matrix (11 targets):
 
 ## License
 
-MIT License — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## Author
 

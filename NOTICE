@@ -1,0 +1,36 @@
+ColDataRefresh
+Copyright 2026 aspnmy <support@e2bank.cn>
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+-------------------------------------------------------------------------------
+本项目包含的第三方开源组件 (Third-Party Components)
+-------------------------------------------------------------------------------
+
+本产品在构建时链接/使用以下第三方 Rust crate，其著作权归各自作者所有，
+并按其各自许可证授权使用（均为 MIT 或 Apache-2.0 双许可）：
+
+  - clap            MIT / Apache-2.0
+  - crc32fast       MIT / Apache-2.0
+  - ctrlc           MIT / Apache-2.0
+  - rayon           MIT / Apache-2.0
+  - walkdir         MIT / Unlicense
+  - chrono          MIT / Apache-2.0
+  - regex-lite      MIT / Apache-2.0
+  - log             MIT / Apache-2.0
+  - env_logger      MIT / Apache-2.0
+  - filetime        MIT / Apache-2.0
+  - serde_json      MIT / Apache-2.0
+  - windows-sys     MIT / Apache-2.0
+  - libc            MIT / Apache-2.0
+
+完整的依赖清单与版本见 Cargo.lock；各组件许可证全文可在其官方仓库获取。

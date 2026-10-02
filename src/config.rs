@@ -1,7 +1,9 @@
+//! 全局配置与文件分类阈值。
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-/// 文件分类
+/// 文件分类（按大小）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileCategory {
     Small,
@@ -51,7 +53,7 @@ impl Default for Config {
             memory_limit_mb: 512,
             full_refresh_pattern: vec![0xFF],
             trim_block_size: 1024 * 1024,
-            version: "5.0.0",
+            version: "5.0.2",
         }
     }
 }
