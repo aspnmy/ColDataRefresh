@@ -8,6 +8,10 @@
 
 # ColDataRefresh — SSD 冷数据维护系统 v5.0.3
 
+> **本分支（v5）为 Rust 主线。**
+> 原始作者与原始仓库（Python 原版）：**infrost** — <https://github.com/infrost/ColDataRefresh.git>
+> 本分支基于原作者 Python 实现，经 Python→Rust 重构演进而来，完整致谢原作者。
+
 [English](README_EN.md)
 
 智能检测固态硬盘（SSD）的冷数据，解决 NAND 颗粒电荷泄漏导致的读取掉速问题。使用 Rust 重写，兼顾高性能与数据安全。

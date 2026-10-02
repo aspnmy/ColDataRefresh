@@ -1,5 +1,9 @@
 # ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.3
 
+> **This branch (`v5`) is the Rust main line.**
+> Original author & upstream repository (Python original): **infrost** — <https://github.com/infrost/ColDataRefresh.git>
+> This branch builds on the original author's Python implementation and evolved through a Python→Rust rewrite; full credit to the original author.
+
 [中文](README.md)
 
 Intelligently detects cold data on SSDs and prevents read slowdown caused by charge leakage on NAND cells. Written in Rust for maximum performance and reliability.
