@@ -77,7 +77,7 @@ impl Dashboard {
         let h_line = h.repeat(70);
 
         let header = Terminal::colored(
-            " SSD掉速激活-冷数据维护系统 v5.0.2 作者:support@e2bank.cn By Rust",
+            " SSD掉速激活-冷数据维护系统 v5.0.3 作者:support@e2bank.cn By Rust",
             37,
             44,
         );
