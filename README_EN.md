@@ -1,6 +1,10 @@
 # ColDataRefresh SSD Cold Data Maintenance System v4.7.0
 Intelligently detects cold data on SSD and solves the cold data crash problem with data validation.
 
+> **This branch (`v4-python`) is the consolidation branch of the v4.x Python line.**
+> Original author & upstream repository: **infrost** — <https://github.com/infrost/ColDataRefresh.git>
+> This branch builds on the original author's Python implementation (merging the v4.3 GUI line and the v4.7 feature line); full credit to the original author.
+
 ## v4.7.0 Update Content
 - Fixed the `full_refresh_file` mode to ensure data is correctly written to disk
 - Fixed PyInstaller build script issues to ensure dependency files are correctly packaged
