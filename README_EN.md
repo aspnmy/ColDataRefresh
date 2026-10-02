@@ -1,6 +1,10 @@
 # ColDataRefresh
 Intelligently detects cold data on SSD and solves the cold data crash problem with data validation.
 
+> **This branch (`python-infrost-ColDataRefresh`) is the original Python implementation branch.**
+> Original author & upstream repository: **infrost** — <https://github.com/infrost/ColDataRefresh.git>
+> This branch maintains the original author's Python implementation; full credit to the original author.
+
 ### What is Cold Data
 Cold data refers to data that has been stored on the hard drive for a long time (e.g., half a year or even longer) and has not been rewritten or updated, which is intuitively expressed in terms of files, but in reality is reflected in the physical level of the corresponding storage unit of the file. Usually, documents, videos, music, pictures and other static data stored on the hard drive for a long time are cold data, and even any files that have been read by the operating system, programmes and games over a long period of time without modification or update will ‘grow’ to be cold data in the future (hot or incremental updates are already very mature nowadays, but they can be used for a long time). Generally speaking, updates to systems, games, and applications will only update the parts that need to be changed, and leave the parts that don't need to be changed untouched).
 **Note that the formation of cold data is only related to writing, not reading, even if a file is read frequently, but not modified to write, it is possible to become cold data** (this is also the reason why some people react to the slow loading of the games that they often play because of the cold data falling speed).

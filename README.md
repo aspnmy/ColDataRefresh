@@ -1,5 +1,9 @@
 # ColDataRefresh SSD冷数据维护系统 v4.3
 
+> **本分支（python-infrost-ColDataRefresh）为 Python 原版分支。**
+> 原始作者与原始仓库：**infrost** — <https://github.com/infrost/ColDataRefresh.git>
+> 本分支基于原作者仓库的 Python 实现维护，完整致谢原作者。
+
 ## 执行本程序 需要python3.12.0以上环境
 - 首次执行记得 先运行install_dependencies.bat 安装所有依赖
 智能检测固态硬盘的冷数据并解决冷数据掉速问题，带数据校验功能
