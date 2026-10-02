@@ -91,9 +91,10 @@ This project uses GitHub Actions for automated cross-platform release builds.
 
 Trigger a release:
 ```bash
-git checkout v5.0
-git tag v5.0.0
+git checkout v5.0.0
+git tag v5.0.2
 git push origin v5.0.0
+git push origin v5.0.2
 ```
 
 Build matrix (11 targets):
