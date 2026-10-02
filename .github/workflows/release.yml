@@ -103,9 +103,11 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" dist/
+          if [ -f README.md ]; then cp README.md  dist/; fi
           if [ -f README_EN.md ]; then cp README_EN.md dist/; fi
           if [ -f LICENSE ]; then cp LICENSE dist/; fi
-
+          if [ -f NOTICE ]; then cp NOTICE dist/; fi
+          
       - name: Create tar.gz archive
         if: matrix.archive == 'tar.gz'
         shell: bash
