@@ -19,7 +19,7 @@ mod terminal;
 #[derive(Parser, Debug)]
 #[command(
     name = "coldatafresh",
-    version = "5.0.2",
+    version = "5.0.3",
     about = "冷数据维护工具 - 优化SSD性能，延长使用寿命"
 )]
 //// ============================ CLI 模式参数 (CLI mode options) ============================
@@ -59,6 +59,26 @@ struct Args {
     /// 非交互模式：处理缓冲区大小（MB），仅在 CLI 模式下生效
     #[arg(short = 'b', long)]
     buffer_size: Option<u32>,
+
+    /// 全盘刷新：保留已使用空间中的文件（备份→删除→填充→恢复）
+    #[arg(long, conflicts_with = "no_keep_files")]
+    keep_files: bool,
+
+    /// 全盘刷新：不保留文件（数据不可恢复）
+    #[arg(long)]
+    no_keep_files: bool,
+
+    /// 全盘刷新：额外填充空闲空间（覆写未分配空间，不可恢复）
+    #[arg(long)]
+    fill_free: bool,
+
+    /// 全盘刷新：填充空闲空间时每个文件的写入容量（GB，1-100）
+    #[arg(long, value_name = "GB", default_value_t = 50)]
+    unit_gb: u64,
+
+    /// 全盘刷新：写入缓冲区大小（KB，64~1048576）
+    #[arg(long, value_name = "KB", default_value_t = 512)]
+    write_buf_kb: u64,
 }
 //// ========================================================================================
 
@@ -74,7 +94,7 @@ fn main() {
     .try_init();
 
     // 设置窗口标题
-    terminal::Terminal::set_window_title("冷数据维护工具 v5.0.2");
+    terminal::Terminal::set_window_title("冷数据维护工具 v5.0.3");
 
     // 初始化日志器
     log::logger();
@@ -90,6 +110,11 @@ fn main() {
         skip_smaller: args.skip_smaller,
         yes: args.yes,
         buffer_size_mb: args.buffer_size,
+        keep_files: args.keep_files,
+        no_keep_files: args.no_keep_files,
+        fill_free: args.fill_free,
+        unit_gb: args.unit_gb,
+        write_buf_kb: args.write_buf_kb,
     };
 
     //// ----------------------------------------------------------------------------------------

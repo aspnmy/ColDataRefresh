@@ -22,6 +22,12 @@ pub struct RunOptions {
     pub skip_smaller: Option<u64>,
     pub yes: bool,
     pub buffer_size_mb: Option<u32>,
+    // 全盘刷新参数（CLI 非交互路径使用，替代原有的 stdin 提问）
+    pub keep_files: bool,
+    pub no_keep_files: bool,
+    pub fill_free: bool,
+    pub unit_gb: u64,
+    pub write_buf_kb: u64,
 }
 
 /// 应用控制器 — 交互菜单与模式路由
@@ -110,10 +116,9 @@ impl App {
             return if ok { 0 } else { 1 };
         }
 
-        // 全盘刷新
+        // 全盘刷新（CLI 路径：参数取自命令行，不读 stdin）
         if opts.full_refresh {
-            self.run_full_refresh_mode(&directory);
-            return 0;
+            return if self.run_full_refresh_cli(&directory, &opts) { 0 } else { 1 };
         }
 
         // 智能模式
@@ -369,7 +374,7 @@ impl App {
         let eq = "=".repeat(50);
 
         println!("{}", eq);
-        println!("SSD掉速激活-冷数据维护系统 v5.0.2{}", admin);
+        println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
         println!("运行平台 (Platform): {}", os_info);
         println!("作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294");
         println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
@@ -392,7 +397,7 @@ impl App {
         let eq = "=".repeat(50);
 
         println!("{}", eq);
-        println!("SSD掉速激活-冷数据维护系统 v5.0.2{}", admin);
+        println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
         println!("运行平台 (Platform): {}  |  作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294", os_info);
         println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
         println!("{}", eq);
@@ -623,40 +628,37 @@ impl App {
         result
     }
 
-    fn run_full_refresh_mode(&self, directory: &str) {
-        crate::terminal::Terminal::clear();
-        logger().log(&format!("开始全盘刷新模式: 路径='{}'", directory), "INFO");
+    /// 全盘刷新（交互模式）— 通过 stdin 询问参数，返回真实执行结果
+    fn run_full_refresh_mode(&self, directory: &str) -> bool {
+        let params = self.prompt_full_refresh_params(directory);
+        self.execute_full_refresh(directory, params)
+    }
 
-        let is_drive = platform::is_root_path(directory);
-        let eq = "=".repeat(50);
-        println!("{}", eq);
-        println!("          全盘刷新模式 (Full Refresh Mode)");
-        println!("{}", eq);
-        println!(
-            "路径类型 (Path type): {}",
-            if is_drive {
-                "整个盘符 (whole drive)"
-            } else {
-                "文件目录 (directory)"
-            }
-        );
+    /// 全盘刷新（CLI 模式）— 参数来自命令行，全程不读 stdin
+    fn run_full_refresh_cli(&self, directory: &str, opts: &RunOptions) -> bool {
+        // -cli 下必须显式指定是否保留文件
+        let keep = if opts.keep_files {
+            true
+        } else if opts.no_keep_files {
+            false
+        } else {
+            eprintln!(
+                "错误 (Error): 全盘刷新在 -cli 下必须显式指定 --keep-files 或 --no-keep-files (keep/no-keep required)"
+            );
+            return false;
+        };
 
-        // 计算目录内文件总大小（递归）
-        println!("\n正在统计目录大小... (Calculating directory size...)");
-        let dir_size: u64 = walkdir::WalkDir::new(directory)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum();
+        let params = FullRefreshParams {
+            keep_files: keep,
+            fill_free: opts.fill_free,
+            unit_gb: opts.unit_gb.clamp(1, 100),
+            write_buf_kb: opts.write_buf_kb.clamp(64, 1024 * 1024),
+        };
+        self.execute_full_refresh(directory, params)
+    }
 
-        // 获取硬盘可用空间
-        let (_total, _used, free) = platform::get_disk_space(std::path::Path::new(directory));
-        println!("目录信息 (Directory info):");
-        println!("  目录大小 (size): {}", config::format_size(dir_size));
-        println!("  可用空间 (free): {}", config::format_size(free));
-
+    /// 全盘刷新参数（交互与 CLI 共用的输入结构）
+    fn prompt_full_refresh_params(&self, directory: &str) -> FullRefreshParams {
         // 询问是否保留文件（总是需要）
         print!("\n是否保留已使用空间中的文件? (Keep existing files?) (Y/N, 默认/default Y): ");
         io::stdout().flush().ok();
@@ -703,7 +705,69 @@ impl App {
             (0, 64)
         };
 
-        // 执行全盘刷新（目录空间始终填充，空闲空间由 fill_free 控制）
-        FullRefresh::execute(directory, keep, fill_free, dir_size, unit_gb, write_buf_kb);
+        let _ = directory;
+        FullRefreshParams { keep_files: keep, fill_free, unit_gb, write_buf_kb }
     }
+
+    /// 全盘刷新执行核心 — 交互与 CLI 共用，全程无 stdin
+    fn execute_full_refresh(&self, directory: &str, params: FullRefreshParams) -> bool {
+        crate::terminal::Terminal::clear();
+        logger().log(&format!("开始全盘刷新模式: 路径='{}'", directory), "INFO");
+
+        let is_drive = platform::is_root_path(directory);
+        let eq = "=".repeat(50);
+        println!("{}", eq);
+        println!("          全盘刷新模式 (Full Refresh Mode)");
+        println!("{}", eq);
+        println!(
+            "路径类型 (Path type): {}",
+            if is_drive {
+                "整个盘符 (whole drive)"
+            } else {
+                "文件目录 (directory)"
+            }
+        );
+
+        // 计算目录内文件总大小（递归）
+        println!("\n正在统计目录大小... (Calculating directory size...)");
+        let dir_size: u64 = walkdir::WalkDir::new(directory)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum();
+
+        // 获取硬盘可用空间
+        let (_total, _used, free) = platform::get_disk_space(std::path::Path::new(directory));
+        println!("目录信息 (Directory info):");
+        println!("  目录大小 (size): {}", config::format_size(dir_size));
+        println!("  可用空间 (free): {}", config::format_size(free));
+
+        // 回显本次参数（替代原先的交互提问）
+        println!("  保留文件 (keep files): {}", if params.keep_files { "是/yes" } else { "否/no" });
+        println!("  填充空闲空间 (fill free): {}", if params.fill_free { "是/yes" } else { "否/no" });
+        if params.fill_free {
+            println!("  写入容量 (unit): {} GB", params.unit_gb);
+            println!("  写入缓冲区 (buffer): {} KB", params.write_buf_kb);
+        }
+
+        // 执行全盘刷新（目录空间始终填充，空闲空间由 fill_free 控制）
+        FullRefresh::execute(
+            directory,
+            params.keep_files,
+            params.fill_free,
+            dir_size,
+            params.unit_gb,
+            params.write_buf_kb,
+        )
+    }
+}
+
+/// 全盘刷新的输入参数
+struct FullRefreshParams {
+    keep_files: bool,
+    fill_free: bool,
+    unit_gb: u64,
+    write_buf_kb: u64,
 }

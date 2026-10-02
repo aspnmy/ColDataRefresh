@@ -6,7 +6,7 @@
 - v6.0版本开始 将提供i18n-语义包，需要其他语言的，请对i18n-zh.lang进行翻译即可 
 - 如需预览v6.0版本请向邮箱写邮件说明应用场景，将给予我们内部仓库的协作者只读权限
 
-# ColDataRefresh — SSD 冷数据维护系统 v5.0.2
+# ColDataRefresh — SSD 冷数据维护系统 v5.0.3
 
 [English](README_EN.md)
 
@@ -43,8 +43,11 @@ coldatafresh
 # 智能模式：刷新 180 天以上未修改的文件
 coldatafresh --cli -p "/data" -a 180
 
-# 全盘刷新模式（破坏性操作，必须加 -y 确认）
-coldatafresh --cli -p "/data" -f -y
+# 全盘刷新模式（破坏性操作，必须加 -y；且必须显式指定是否保留文件）
+coldatafresh --cli -p "/data" -f -y --keep-files
+
+# 全盘刷新 + 填充空闲空间（覆写未分配空间，不可恢复）
+coldatafresh --cli -p "/data" -f -y --no-keep-files --fill-free --unit-gb 50 --write-buf-kb 512
 
 # 仅执行 TRIM（破坏性操作，必须加 -y 确认）
 coldatafresh --cli -p "/data" -t -y
@@ -66,6 +69,11 @@ coldatafresh --cli -p "/data" -a 365 -s 10 -v
 | `-t`, `--trim` | TRIM 优化模式 |
 | `-y`, `--yes` | 破坏性操作确认（`--cli` 下使用 `-f` / `-t` 时必填） |
 | `-b`, `--buffer-size` | 处理缓冲区大小（MB，`--cli` 下生效） |
+| `--keep-files` | 全盘刷新：保留文件（备份→删除→填充→恢复）；`-cli -f` 必填其一 |
+| `--no-keep-files` | 全盘刷新：不保留文件（数据不可恢复） |
+| `--fill-free` | 全盘刷新：额外填充空闲空间（不可恢复） |
+| `--unit-gb` | 填充空闲空间时每文件写入容量（GB，1-100，默认 50） |
+| `--write-buf-kb` | 写入缓冲区大小（KB，64~1048576，默认 512） |
 | `-s`, `--skip-smaller` | 跳过小于 N MB 的文件 |
 | `-v`, `--verbose` | 启用详细日志 |
 
@@ -100,9 +108,9 @@ cargo build --release
 触发发布：
 ```bash
 git checkout v5.0.0
-git tag v5.0.2
+git tag v5.0.3
 git push origin v5.0.0
-git push origin v5.0.2
+git push origin v5.0.3
 ```
 
 构建矩阵（11 个目标平台）：
@@ -140,6 +148,12 @@ git push origin v5.0.2
 - **零运行时依赖** — 单文件静态编译
 
 ## 更新日志
+
+### v5.0.3 — 全盘刷新 CLI 参数化
+- **全盘刷新在 `--cli` 下彻底不读 stdin**：新增 `--keep-files` / `--no-keep-files`（`-cli -f` 必填其一）、`--fill-free`、`--unit-gb`、`--write-buf-kb`，替代原有的 5 处交互提问
+- 修复全盘刷新退出码：原 `execute()` 无返回值、失败也报 `0`（假成功），现返回真实结果（`0` 成功 / `1` 失败）
+- 交互模式行为完全不变（仍走原来的 stdin 提问流程）
+- 至此**三种模式（智能 / 全盘刷新 / TRIM）在 CLI 与交互模式下全部可用**
 
 ### v5.0.2 — 命令行模式与双语文案
 - **新增真正的命令行（非交互）模式**：`--cli` 显式触发，全程不读 stdin，适合脚本化 / 无人值守

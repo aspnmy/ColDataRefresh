@@ -14,8 +14,9 @@ impl FullRefresh {
     /// 执行全盘刷新业务流程
     /// dir_size: 目录本身占用的空间（始终填充这部分）
     /// fill_free: 是否额外填充空闲空间
+    /// 返回 true = 全流程成功；false = 中途失败（备份/删除/备份盘缺失），调用方据此定退出码。
     pub fn execute(directory: &str, keep_files: bool, fill_free: bool,
-                   dir_size: u64, unit_size_gb: u64, write_buf_kb: u64) {
+                   dir_size: u64, unit_size_gb: u64, write_buf_kb: u64) -> bool {
         logger().log("开始全盘刷新业务流程", "INFO");
 
         let unit_size = unit_size_gb * 1024u64.pow(3);
@@ -34,13 +35,13 @@ impl FullRefresh {
                 Some(drive) => drive.join("$aspnmytools"),
                 None => {
                     println!("❌ 未找到可用的备份盘 (no backup drive found, must differ from target)，终止全盘刷新 (aborting)");
-                    return;
+                    return false;
                 }
             };
 
             if let Err(e) = std::fs::create_dir_all(&backup) {
                 println!("❌ 创建备份目录失败 (create backup dir failed): {}，终止全盘刷新 (aborting to protect data)", e);
-                return;
+                return false;
             }
             println!("\n正在备份文件到 (Backing up to) {}...", backup.display());
 
@@ -49,7 +50,7 @@ impl FullRefresh {
                 Some(backup)
             } else {
                 println!("❌ 文件备份失败 (backup failed)，终止全盘刷新 (aborting to protect data)");
-                return;
+                return false;
             }
         } else {
             println!("\n用户选择不保留文件，数据将无法恢复 (not keeping files, data unrecoverable)");
@@ -62,7 +63,7 @@ impl FullRefresh {
             Err(e) => {
                 println!("❌ 删除失败 (delete failed): {}", e);
                 println!("   请手动删除目标目录中的文件后再执行全盘刷新 (delete manually, then retry)");
-                return;
+                return false;
             }
             Ok((success, failure)) => {
                 if success > 0 || failure > 0 {
@@ -117,6 +118,8 @@ impl FullRefresh {
         println!("\n全盘刷新完成! (Full refresh completed)");
         println!("累积写入容量 (Total written): {}", format_size(cumulative));
         println!("最高写入速度 (Max speed): {:.2} MB/s", max_speed);
+
+        true
     }
 }
 

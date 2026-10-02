@@ -53,7 +53,7 @@ impl Default for Config {
             memory_limit_mb: 512,
             full_refresh_pattern: vec![0xFF],
             trim_block_size: 1024 * 1024,
-            version: "5.0.2",
+            version: "5.0.3",
         }
     }
 }

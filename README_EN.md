@@ -1,4 +1,4 @@
-# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.2
+# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.3
 
 [中文](README.md)
 
@@ -35,8 +35,11 @@ coldatafresh
 # Smart mode: refresh files older than 180 days
 coldatafresh --cli -p "/data" -a 180
 
-# Full disk refresh (destructive — -y required)
-coldatafresh --cli -p "/data" -f -y
+# Full disk refresh (destructive — -y required; keep/no-keep must be explicit)
+coldatafresh --cli -p "/data" -f -y --keep-files
+
+# Full disk refresh + fill free space (overwrites unallocated space, unrecoverable)
+coldatafresh --cli -p "/data" -f -y --no-keep-files --fill-free --unit-gb 50 --write-buf-kb 512
 
 # Execute TRIM only (destructive — -y required)
 coldatafresh --cli -p "/data" -t -y
@@ -58,6 +61,11 @@ coldatafresh --cli -p "/data" -a 365 -s 10 -v
 | `-t`, `--trim` | TRIM optimization mode |
 | `-y`, `--yes` | Confirmation for destructive operations (required with `-f` / `-t` under `--cli`) |
 | `-b`, `--buffer-size` | Processing buffer size in MB (effective under `--cli`) |
+| `--keep-files` | Full refresh: keep files (backup → delete → fill → restore); one of the two is required with `-cli -f` |
+| `--no-keep-files` | Full refresh: do not keep files (unrecoverable) |
+| `--fill-free` | Full refresh: also fill free space (unrecoverable) |
+| `--unit-gb` | Write size per file when filling free space (GB, 1-100, default 50) |
+| `--write-buf-kb` | Write buffer size (KB, 64~1048576, default 512) |
 | `-s`, `--skip-smaller` | Skip files smaller than N MB |
 | `-v`, `--verbose` | Enable detailed logging |
 
@@ -92,9 +100,9 @@ This project uses GitHub Actions for automated cross-platform release builds.
 Trigger a release:
 ```bash
 git checkout v5.0.0
-git tag v5.0.2
+git tag v5.0.3
 git push origin v5.0.0
-git push origin v5.0.2
+git push origin v5.0.3
 ```
 
 Build matrix (11 targets):
@@ -132,6 +140,12 @@ Build matrix (11 targets):
 - **No runtime dependencies** — single static binary
 
 ## Changelog
+
+### v5.0.3 — Parameterized Full Refresh for CLI
+- **Full refresh under `--cli` no longer reads stdin at all**: added `--keep-files` / `--no-keep-files` (one required with `-cli -f`), `--fill-free`, `--unit-gb`, `--write-buf-kb`, replacing the previous 5 interactive prompts
+- Fixed the full-refresh exit code: `execute()` returned nothing and reported `0` even on failure; it now returns the real result (`0` success / `1` failure)
+- Interactive mode behavior is unchanged (still uses the original stdin prompts)
+- All **three modes (smart / full refresh / TRIM) are now fully available in both CLI and interactive mode**
 
 ### v5.0.2 — CLI Mode & Bilingual Text
 - **Genuine CLI (non-interactive) mode**: explicitly triggered by `--cli`, never reads stdin — suitable for scripting / unattended use
