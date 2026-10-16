@@ -132,33 +132,47 @@ impl BlockDevice {
 }
 
 /// 对齐缓冲区 —— 满足 O_DIRECT / FILE_FLAG_NO_BUFFERING 的地址对齐要求
+///
+/// ⚠️ 采用「自持所有权」设计：内部持 `Vec<u8>`（由分配器管理首地址），
+/// 使用前用 `align_offset` 手工对齐访问窗口 ⇒ **随 `Vec` 析构自动归还内存**，
+/// 无需手写 `dealloc`（issue #10 第 4 条：运行时能自行 GC 的要 GC 掉，防 Win 假死）。
 pub struct AlignedBuf {
-    ptr: *mut u8,
+    /// 实际持有内存的容器（drop 时自动释放）
+    buf: Vec<u8>,
+    /// 对齐后的起始偏移（buf 内的整数偏移，非指针）
+    offset: usize,
+    /// 有效长度（字节）
     len: u64,
 }
 
 impl AlignedBuf {
-    /// 分配 len 字节、地址按 `align` 对齐的缓冲区
+    /// 分配 len 字节、起始地址按 `align` 对齐的缓冲区
     pub fn new(len: u64, align: usize) -> Result<Self, String> {
         let align = align.max(512).next_power_of_two();
         let actual = len.max(align as u64) as usize;
 
-        // 多分配一些以便手工对齐（跨平台，不依赖 posix_memalign）
-        let layout = std::alloc::Layout::from_size_align(actual + align, align)
-            .map_err(|e| format!("分配对齐缓冲失败 (layout): {}", e))?;
-        // SAFETY: layout 非零大小，alloc_zeroed 返回有效指针或空
-        let base = unsafe { std::alloc::alloc_zeroed(layout) };
-        if base.is_null() {
-            return Err("分配对齐缓冲失败 (alloc returned null)".to_string());
-        }
-        // 手工对齐到 align 边界
-        let addr = base as usize;
-        let aligned = (addr + align - 1) & !(align - 1);
+        // 多分配 align 字节，保证内部总能找到对齐起点
+        let total = actual
+            .checked_add(align)
+            .ok_or_else(|| format!("缓冲区尺寸溢出 (size overflow): {}+{}", actual, align))?;
+
+        let buf = vec![0u8; total];
+        // 手工对齐：把首地址上取整到 align 边界
+        let base = buf.as_ptr() as usize;
+        let aligned = (base + align - 1) & !(align - 1);
+        let offset = aligned - base;
 
         Ok(Self {
-            ptr: aligned as *mut u8,
+            buf,
+            offset,
             len: actual as u64,
         })
+    }
+
+    /// 对齐后的起始指针
+    fn as_ptr(&self) -> *const u8 {
+        // SAFETY: offset < buf.len()（构造时保证 offset <= align < total）
+        unsafe { self.buf.as_ptr().add(self.offset) }
     }
 
     /// 缓冲区长度（字节）
@@ -168,22 +182,17 @@ impl AlignedBuf {
 
     /// 以可变切片访问（填充 / 读取用）
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: ptr 指向 len 字节的有效可写内存
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len as usize) }
+        let off = self.offset;
+        let n = self.len as usize;
+        // SAFETY: off + n <= buf.len()（构造时 total = actual + align 且 off <= align）
+        unsafe { std::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(off), n) }
     }
 
     /// 以只读切片访问
     pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: ptr 指向 len 字节的有效内存
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len as usize) }
-    }
-}
-
-impl Drop for AlignedBuf {
-    fn drop(&mut self) {
-        // 释放时需要还原分配时的基址 —— 因手工对齐后指针已偏移。
-        // 简化处理：不再回溯基址，交由进程退出回收（本工具的缓冲为长生命周期、数量极少）。
-        // 注意：这不是泄漏热点；如需精确释放应保存 base 指针。
+        let n = self.len as usize;
+        // SAFETY: 同上，窗口落在 buf 容量之内
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), n) }
     }
 }
 
@@ -241,6 +250,51 @@ fn direct_discard(device: &str, offset: u64, len: u64) -> Result<(), String> {
     crate::platform::block_direct_discard(device, offset, len)
 }
 
+//// ===================== 范围分块迭代 (aligned range chunks) =====================
+
+/// 对齐后的 I/O 范围 —— 起止均已按扇区取整，保证落在设备容量内。
+///
+/// 抽出本类型的目的（issue #10 第 2 条「可抽象的尽量抽象」）：
+/// `direct_fill` / `direct_verify` 原先各自重复一遍「起止对齐 + 容量截断 + 空范围判定」，
+/// 现统一由 `AlignedRange::new` 负责，调用方只关心遍历。
+#[derive(Debug, Clone, Copy)]
+pub struct AlignedRange {
+    /// 对齐后的起始偏移
+    pub start: u64,
+    /// 对齐后的结束偏移（开区间）
+    pub end: u64,
+}
+
+impl AlignedRange {
+    /// 构造对齐范围：起点下取整、终点按容量截断后下取整。
+    /// 范围为空（`end <= start`）时返回 `None`。
+    pub fn new(start_offset: u64, end_offset: u64, align: u64, capacity: u64) -> Option<Self> {
+        let align = align.max(1);
+        let start = start_offset - (start_offset % align);
+        let capped = end_offset.min(capacity);
+        let end = capped - (capped % align);
+        (end > start).then_some(Self { start, end })
+    }
+
+    /// 总长度（字节）
+    pub fn len(&self) -> u64 {
+        self.end - self.start
+    }
+
+    /// 按 `unit_bytes` 切成单元区间（最后一块取剩余量）。
+    /// 单元大小下限 = 1，避免除零/死循环。
+    pub fn units(&self, unit_bytes: u64) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let unit = unit_bytes.max(1);
+        let start = self.start;
+        let end = self.end;
+        std::iter::successors(Some(start), move |&off| {
+            let next = off + unit.min(end - off);
+            (next < end).then_some(next)
+        })
+        .map(move |off| (off, unit.min(end - off)))
+    }
+}
+
 //// ===================== 直写刷写后端 (direct-write refresh backend) =====================
 
 /// 块设备直写填充 —— 绕过文件系统，从 start_offset 顺序覆写至 end_offset。
@@ -257,24 +311,19 @@ pub fn direct_fill(
     buf_kb: u64,
 ) -> Result<(u64, u64), String> {
     let align = bd.alignment();
-    let cap = bd.info().capacity;
-    let mut off = start_offset - (start_offset % align);
-    let end_raw = end_offset.min(cap);
-    let end = end_raw - (end_raw % align);
-    if end <= off {
-        return Err("写入范围为空 (empty range)".to_string());
-    }
+    let range = AlignedRange::new(start_offset, end_offset, align, bd.info().capacity)
+        .ok_or_else(|| "写入范围为空 (empty range)".to_string())?;
 
     let buf_bytes = (buf_kb * 1024).max(align);
+    let mut buf = bd.alloc_aligned(buf_bytes)?;
     let mut unit = 0u64;
     let mut total = 0u64;
-    let mut buf = bd.alloc_aligned(buf_bytes)?;
 
-    while off < end {
-        let this_len = unit_bytes.min(end - off);
-        let mut written = 0u64;
-        // 每 64KB 换一段随机内容（顺序写 + 内容随机）
+    for (off, this_len) in range.units(unit_bytes) {
+        // 每单元换一段随机内容（顺序写 + 内容随机）
         fill_random(buf.as_mut_slice());
+        // 单元内再按缓冲区切分，直到写完 this_len
+        let mut written = 0u64;
         while written < this_len {
             let n = buf_bytes.min(this_len - written);
             bd.write_at(off + written, &buf, n)?;
@@ -282,7 +331,6 @@ pub fn direct_fill(
         }
         unit += 1;
         total += this_len;
-        off += this_len;
 
         if unit.is_multiple_of(10) {
             println!(
@@ -304,19 +352,22 @@ pub fn direct_verify(
     buf_kb: u64,
 ) -> Result<u64, String> {
     let align = bd.alignment();
-    let cap = bd.info().capacity;
-    let mut off = start_offset - (start_offset % align);
-    let end_raw = end_offset.min(cap);
-    let end = end_raw - (end_raw % align);
+    let range = AlignedRange::new(start_offset, end_offset, align, bd.info().capacity)
+        .ok_or_else(|| "校验范围为空 (empty range)".to_string())?;
+
     let buf_bytes = (buf_kb * 1024).max(align);
     let mut buf = bd.alloc_aligned(buf_bytes)?;
     let mut read_total = 0u64;
 
-    while off < end {
-        let n = buf_bytes.min(end - off);
-        bd.read_at(off, &mut buf, n)?;
-        read_total += n;
-        off += n;
+    // 以「整段」为单位切分（unit_bytes = 剩余全部 ⇒ 退化为缓冲区粒度遍历）
+    for (off, chunk_len) in range.units(range.len()) {
+        let mut done = 0u64;
+        while done < chunk_len {
+            let n = buf_bytes.min(chunk_len - done);
+            bd.read_at(off + done, &mut buf, n)?;
+            done += n;
+            read_total += n;
+        }
     }
     Ok(read_total)
 }
