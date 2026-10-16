@@ -303,8 +303,29 @@ pub fn ask_return_to_menu() -> bool {
     }
 }
 
+/// 询问全盘刷新的工作目录（issue #14：**必填**，⛔ 不用兜底值）
+///
+/// 返回 `None` = 用户未输入（调用方据此中止）；空白输入一律视为未提供。
+pub fn prompt_work_dir() -> Option<String> {
+    println!("\n全盘刷新需要工作目录 (Full refresh requires a work dir):");
+    println!("  用途 (Usage): 备份落点与填充文件临时落点，两者共用 (backup + fill scratch)");
+    println!("  ⚠️  请指定一个**与目标盘不同**的可用路径 (must differ from target)");
+    print!("请输入工作目录路径 (Work dir path): ");
+    io::stdout().flush().ok();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok();
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 /// 全盘刷新参数询问（交互模式用；CLI 路径**不调用**本函数）
-pub fn prompt_full_refresh_params() -> FullRefreshParams {
+///
+/// `work_dir` 由交互入口先行询问（issue #14：**必填**，⛔ 不用兜底值）
+pub fn prompt_full_refresh_params(work_dir: String) -> FullRefreshParams {
     // 询问是否保留文件
     print!("\n是否保留已使用空间中的文件? (Keep existing files?) (Y/N, 默认/default Y): ");
     io::stdout().flush().ok();
@@ -352,6 +373,7 @@ pub fn prompt_full_refresh_params() -> FullRefreshParams {
     };
 
     FullRefreshParams {
+        work_dir,
         keep_files,
         fill_free,
         unit_gb,

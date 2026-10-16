@@ -100,6 +100,69 @@ pub fn bpftrace_available() -> bool {
     has_tool && has_btf
 }
 
+//// -------------------- 工作目录（统一入口，issue #14） --------------------
+// 平台无关：全盘刷新与跑圈校验共用的「工作目录」解析与准备。
+// ⛔ 不再由各模式各写一遍拼路径（原为各自的 `$aspnmytools`，且各系统兜底值不同）。
+
+/// 工作目录的子用途（同一 `--work-dir` 下按用途分目录）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkSubDir {
+    /// 备份落点（全盘刷新 `--keep-files`）
+    Backup,
+    /// 填充文件临时落点（全盘刷新 `--fill-free`）
+    Fill,
+}
+
+impl WorkSubDir {
+    /// 子目录名
+    pub fn dir_name(self) -> &'static str {
+        match self {
+            WorkSubDir::Backup => "backup",
+            WorkSubDir::Fill => "fill",
+        }
+    }
+}
+
+/// 解析工作目录——**必填**，空白视为未提供（issue #14：⛔ 不用兜底默认值）。
+///
+/// 各系统的临时目录不同，内置默认值会写错位置 ⇒ 未配置一律返回 Err，
+/// 由调用方打印双语错误并中止，不静默取默认值。
+pub fn resolve_work_dir(work_dir: Option<&str>) -> Result<std::path::PathBuf, String> {
+    match work_dir.map(str::trim) {
+        Some(w) if !w.is_empty() => Ok(std::path::PathBuf::from(w)),
+        _ => Err("工作目录未配置 (work dir not configured)：请显式指定 --work-dir <路径>".to_string()),
+    }
+}
+
+/// 取工作目录下某个用途的子目录路径（只拼路径，不建目录）
+pub fn work_subdir(work_dir: &std::path::Path, sub: WorkSubDir) -> std::path::PathBuf {
+    work_dir.join(sub.dir_name())
+}
+
+/// 准备（创建）工作目录及其子用途目录，并做可写性探测。
+///
+/// 返回 Err = 不可创建或不可写；调用方据此中止，不继续执行破坏性流程。
+pub fn prepare_work_dir(
+    work_dir: &std::path::Path,
+    sub: Option<WorkSubDir>,
+) -> Result<std::path::PathBuf, String> {
+    let target = match sub {
+        Some(s) => work_subdir(work_dir, s),
+        None => work_dir.to_path_buf(),
+    };
+
+    std::fs::create_dir_all(&target)
+        .map_err(|e| format!("无法创建工作目录 {} (cannot create work dir): {}", target.display(), e))?;
+
+    // 可写性探测：建一个探针文件再删掉
+    let probe = target.join(".coldatafresh-writable-probe");
+    std::fs::write(&probe, b"probe")
+        .map_err(|e| format!("工作目录不可写 {} (work dir not writable): {}", target.display(), e))?;
+    let _ = std::fs::remove_file(&probe);
+
+    Ok(target)
+}
+
 //// -------------------- tracefs 操作 (tracefs ops) --------------------
 // ⚠️ tracefs 是 Linux 专有（`/sys/kernel/debug/tracing` + unix dev_t）⇒ 整段须加平台守卫，
 // 否则 Windows/musl 目标编译时会执行到 `std::os::unix`（CI 实测 error[E0433]）。

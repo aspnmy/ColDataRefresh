@@ -18,12 +18,16 @@ log = "0.4"
 env_logger = "0.11"
 filetime = "0.2"
 serde_json = "1.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# 平台专有依赖按 target 门控（issue #14 同类：⛔ 不放进通用段，
+# 否则 Linux/macOS 构建也会白白拉取 Windows 专有依赖）
+[target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Threading",
     "Win32_Foundation",
 ]}
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"

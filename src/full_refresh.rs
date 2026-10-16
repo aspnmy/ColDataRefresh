@@ -8,8 +8,11 @@ use crate::log::logger;
 use crate::platform;
 
 /// 全盘刷新参数（交互与 CLI 共用的输入结构）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FullRefreshParams {
+    /// 工作目录（**必填**，issue #14）——备份落点与填充落点两者共用；
+    /// ⛔ 不提供兜底默认值：各系统临时目录不同，内置默认值会写错位置
+    pub work_dir: String,
     pub keep_files: bool,
     pub fill_free: bool,
     pub unit_gb: u64,
@@ -24,12 +27,23 @@ impl FullRefresh {
     /// dir_size: 目录本身占用的空间（始终填充这部分）
     /// fill_free: 是否额外填充空闲空间
     /// 返回 true = 全流程成功；false = 中途失败（备份/删除/备份盘缺失），调用方据此定退出码。
-    pub fn execute(directory: &str, keep_files: bool, fill_free: bool,
+    /// `work_dir`：**必填**工作目录（issue #14）——备份落点与填充文件临时落点**两者共用**。
+    /// ⛔ 不再内置任何兜底路径（原 `$aspnmytools` 相对目录 + Windows 盘符探测
+    /// `find_backup_drive` 在 Linux 上恒返 None）⇒ 缺该参数由调用方直接报错，不进入本函数。
+    pub fn execute(directory: &str, work_dir: &str, keep_files: bool, fill_free: bool,
                    dir_size: u64, unit_size_gb: u64, write_buf_kb: u64) -> bool {
         logger().log("开始全盘刷新业务流程", "INFO");
 
         let unit_size = unit_size_gb * 1024u64.pow(3);
         let dir_path = Path::new(directory);
+        // 统一入口（issue #14）：工作目录的解析/准备走 platform，⛔ 各模式不再各写一遍
+        let work_path = match platform::resolve_work_dir(Some(work_dir)) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("❌ {}", e);
+                return false;
+            }
+        };
 
         // 1. 获取磁盘统计信息
         let (_total, used, free) = platform::get_disk_space(dir_path);
@@ -39,19 +53,15 @@ impl FullRefresh {
 
         // 2. 备份文件（如果需要）
         let backup_dir = if keep_files {
-            // 备份必须存到与目标不同的盘，否则覆写时会破坏备份
-            let backup = match find_backup_drive(directory) {
-                Some(drive) => drive.join("$aspnmytools"),
-                None => {
-                    println!("❌ 未找到可用的备份盘 (no backup drive found, must differ from target)，终止全盘刷新 (aborting)");
+            // issue #14：备份落点统一交 platform 准备（⛔ 不再自动探测盘符 ——
+            // 原 find_backup_drive 是 Windows 专有逻辑，Linux 上恒返 None ⇒ 必挂）
+            let backup = match platform::prepare_work_dir(&work_path, Some(platform::WorkSubDir::Backup)) {
+                Ok(p) => p,
+                Err(e) => {
+                    println!("❌ {}，终止全盘刷新 (aborting to protect data)", e);
                     return false;
                 }
             };
-
-            if let Err(e) = std::fs::create_dir_all(&backup) {
-                println!("❌ 创建备份目录失败 (create backup dir failed): {}，终止全盘刷新 (aborting to protect data)", e);
-                return false;
-            }
             println!("\n正在备份文件到 (Backing up to) {}...", backup.display());
 
             if backup_files(directory, &backup) {
@@ -90,11 +100,20 @@ impl FullRefresh {
         // 4. 填充空间（覆写原文件释放的空间 + 可选填充空闲空间）
         println!("\n开始填充空间 (Filling)，目录大小 (dir size): {}，空闲空间填充 (fill free): {}",
                  format_size(dir_size), if fill_free { "是" } else { "否" });
-        let result = fill_available_space(directory, unit_size, dir_size, fill_free, write_buf_kb);
+        // 填充落点统一交 platform 准备（issue #14：⛔ 不再写死 $aspnmytools）
+        let fill_dir = match platform::prepare_work_dir(&work_path, Some(platform::WorkSubDir::Fill)) {
+            Ok(p) => p,
+            Err(e) => {
+                println!("❌ {}", e);
+                return false;
+            }
+        };
+        let fill_dir_str = fill_dir.to_string_lossy().to_string();
+        let result = fill_available_space(directory, &fill_dir_str, unit_size, dir_size, fill_free, write_buf_kb);
         let (cumulative, max_speed) = result;
 
         // 4.5 删除填充文件，释放空间用于恢复
-        let work_dir = dir_path.join("$aspnmytools");
+        let work_dir = fill_dir;
         if work_dir.exists() {
             println!("\n正在删除填充文件... (Deleting fill files...)");
             match std::fs::remove_dir_all(&work_dir) {
@@ -344,7 +363,7 @@ fn delete_directory_contents(dir: &Path) -> Result<(u64, u64), String> {
 ///
 /// 优先走**块设备直写**（issues #3/#4：绕过文件系统，避免元数据 / 页缓存拖垮导致卡死）；
 /// 无法解析块设备或安全闸门拒绝时，回退原有文件系统写入路径。
-fn fill_available_space(directory: &str, unit_size: u64, dir_size: u64,
+fn fill_available_space(directory: &str, work_dir: &str, unit_size: u64, dir_size: u64,
                         fill_free: bool, buf_kb: u64) -> (u64, f64) {
     // ── 块设备直写后端（优先） ──
     if let Some(dev) = platform::resolve_block_device(directory) {
@@ -384,8 +403,14 @@ fn fill_available_space(directory: &str, unit_size: u64, dir_size: u64,
 
     // ── 文件系统写入路径（回退，保持原行为） ──
     println!("使用文件系统写入路径 (filesystem write path)");
-    let work_dir = Path::new(directory).join("$aspnmytools");
-    let _ = std::fs::create_dir_all(&work_dir);
+    // issue #14：填充落点统一交 platform 准备（⛔ 各模式不再各写一遍拼路径）
+    let work_dir = match platform::prepare_work_dir(Path::new(work_dir), None) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("❌ {}", e);
+            return (0, 0.0);
+        }
+    };
 
     let mut cumulative = 0u64;
     let mut max_speed = 0.0f64;
@@ -438,35 +463,4 @@ fn fill_available_space(directory: &str, unit_size: u64, dir_size: u64,
 
     println!();
     (cumulative, max_speed)
-}
-
-/// 查找可用于备份的盘符（与目标盘不同，优先 D:）
-fn find_backup_drive(target_path: &str) -> Option<std::path::PathBuf> {
-    let target_drive = if target_path.len() >= 2 && target_path.as_bytes()[1] == b':' {
-        target_path[..1].to_uppercase()
-    } else {
-        return None; // Linux 下暂不支持自动查找
-    };
-
-    let mut candidates: Vec<String> = Vec::new();
-
-    // 扫描 A:-Z: 所有盘符
-    for letter in 'A'..='Z' {
-        let drive = letter.to_string();
-        if drive == target_drive {
-            continue; // 跳过目标盘
-        }
-
-        let path = format!("{}:\\", drive);
-        if std::fs::metadata(&path).is_ok() {
-            candidates.push(drive);
-        }
-    }
-
-    // 优先选 D:，否则取第一个可用盘
-    if candidates.contains(&"D".to_string()) {
-        Some(std::path::PathBuf::from(r"D:\"))
-    } else {
-        candidates.first().map(|d| std::path::PathBuf::from(format!("{}:\\", d)))
-    }
 }

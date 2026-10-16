@@ -55,7 +55,9 @@ pub struct CycleCheck;
 impl CycleCheck {
     /// 执行跑圈校验：共 cycles 圈，每圈 = 写入 → 校验 → 保存报告 → 删除 → TRIM。
     /// 返回全部圈的统计；空 vec 表示首圈即失败（调用方据此定退出码）。
-    pub fn execute(directory: &str, cycles: u64, unit_gb: u64, write_buf_kb: u64) -> Vec<CycleStat> {
+    /// `work_dir`：**必填**工作目录（issue #14）——本模式写入区块文件的临时落点。
+    /// ⛔ 不再写死目标目录下的 `$aspnmytools`：各系统临时目录不同，内置兜底值会出错。
+    pub fn execute(directory: &str, work_dir: &str, cycles: u64, unit_gb: u64, write_buf_kb: u64) -> Vec<CycleStat> {
         logger().log(
             &format!(
                 "开始跑圈校验模式: 路径='{}', 圈数={}, 单元={}GB, 缓冲区={}KB",
@@ -65,6 +67,16 @@ impl CycleCheck {
         );
 
         let dir_path = Path::new(directory);
+        // 统一入口（issue #14）：工作目录解析/准备走 platform，⛔ 各模式不再各写一遍
+        let work_path = match platform::resolve_work_dir(Some(work_dir))
+            .and_then(|p| platform::prepare_work_dir(&p, None))
+        {
+            Ok(p) => p,
+            Err(e) => {
+                println!("❌ {}", e);
+                return Vec::new();
+            }
+        };
         let unit_bytes = unit_gb * 1024u64.pow(3);
         let mut stats: Vec<CycleStat> = Vec::new();
 
@@ -176,7 +188,7 @@ impl CycleCheck {
 
             // ---- ① 写入：1GB 随机数据 + 计算校验码 ----
             let write_start = std::time::Instant::now();
-            let write_outcome = write_blocks(dir_path, unit_bytes, write_buf_kb);
+            let write_outcome = write_blocks(dir_path, work_path.as_path(), unit_bytes, write_buf_kb);
             let write_secs = write_start.elapsed().as_secs_f64();
 
             let (blocks, written_bytes, block_results) = match write_outcome {
@@ -252,7 +264,7 @@ impl CycleCheck {
 
             // ---- ④ 删除 ----
             println!("[圈{}][删除] 开始 (deleting)...", cycle);
-            match delete_blocks(dir_path) {
+            match delete_blocks(work_path.as_path()) {
                 Ok((success, failure)) => {
                     println!(
                         "[圈{}][删除] 完成: 成功 {} 个, 失败 {} 个",
@@ -313,13 +325,19 @@ impl CycleCheck {
 /// 返回 (区块数, 写入总字节, 各区块结果)
 fn write_blocks(
     dir_path: &Path,
+    work_dir: &Path,
     unit_bytes: u64,
     buf_kb: u64,
 ) -> Result<(u64, u64, Vec<BlockResult>), String> {
     use std::fs;
 
-    let work_dir = dir_path.join("$aspnmytools");
-    fs::create_dir_all(&work_dir).map_err(|e| format!("创建写入目录失败: {}", e))?;
+    // issue #14：写入落点 = --work-dir 显式指定（⛔ 不再写死目标目录下的 $aspnmytools）；
+    // 解析与准备统一走 platform::prepare_work_dir，⛔ 各模式不再各写一遍
+    let work_dir = match platform::prepare_work_dir(work_dir, None) {
+        Ok(p) => p,
+        Err(e) => return Err(e),
+    };
+    let work_dir = work_dir.as_path();
 
     let buf_size = (buf_kb * 1024).max(64 * 1024) as usize;
     let mut buf = vec![0u8; buf_size];
@@ -517,8 +535,7 @@ fn save_cycle_report(directory: &str, stat: &CycleStat) -> String {
 }
 
 /// 删除本模式写入的全部区块文件（含工作目录）
-fn delete_blocks(dir_path: &Path) -> Result<(u64, u64), String> {
-    let work_dir = dir_path.join("$aspnmytools");
+fn delete_blocks(work_dir: &Path) -> Result<(u64, u64), String> {
     if !work_dir.exists() {
         return Ok((0, 0));
     }

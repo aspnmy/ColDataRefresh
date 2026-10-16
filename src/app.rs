@@ -36,6 +36,8 @@ pub struct RunOptions {
     pub yes: bool,
     pub buffer_size_mb: Option<u32>,
     // 全盘刷新参数（CLI 非交互路径使用，替代原有的 stdin 提问）
+    /// 全盘刷新：工作目录（**必填**，issue #14）——备份落点与填充落点两者共用
+    pub work_dir: Option<String>,
     pub keep_files: bool,
     pub no_keep_files: bool,
     pub fill_free: bool,
@@ -144,7 +146,15 @@ impl App {
             let cycles = opts.cycles.max(1);
             let unit_gb = opts.unit_gb.clamp(1, 100);
             let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
-            return if self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb) {
+            // issue #14：--work-dir 必填，未配置直接报错（⛔ 不用兜底值）
+            let work_dir = match crate::platform::resolve_work_dir(opts.work_dir.as_deref()) {
+                Ok(p) => p.to_string_lossy().to_string(),
+                Err(e) => {
+                    eprintln!("错误 (Error): {}", e);
+                    return 2;
+                }
+            };
+            return if self.run_cycle_check_cli(&directory, &work_dir, cycles, unit_gb, write_buf_kb) {
                 0
             } else {
                 1
@@ -250,10 +260,21 @@ impl App {
 
             // 跑圈校验模式（交互：询问圈数，默认 2）
             if mode_cycle {
+                // issue #14：--work-dir 必填，交互侧未配置则报错返回
+                let work_dir = match crate::platform::resolve_work_dir(opts.work_dir.as_deref()) {
+                    Ok(p) => p.to_string_lossy().to_string(),
+                    Err(e) => {
+                        eprintln!("错误 (Error): {}", e);
+                        if !menu::ask_return_to_menu() {
+                            break;
+                        }
+                        continue;
+                    }
+                };
                 let cycles = opts.cycles.max(1);
                 let unit_gb = opts.unit_gb.clamp(1, 100);
                 let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
-                self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb);
+                self.run_cycle_check_cli(&directory, &work_dir, cycles, unit_gb, write_buf_kb);
                 if !menu::ask_return_to_menu() {
                     break;
                 }
@@ -599,9 +620,12 @@ impl App {
     }
 
     /// 跑圈校验（CLI 路径）— 参数来自命令行，全程不读 stdin
+    ///
+    /// `work_dir`：**必填**工作目录（issue #14）——本模式写入区块文件的临时落点。
     fn run_cycle_check_cli(
         &self,
         directory: &str,
+        work_dir: &str,
         cycles: u64,
         unit_gb: u64,
         write_buf_kb: u64,
@@ -619,7 +643,7 @@ impl App {
         println!("{}", eq);
 
         let stats = crate::cycle_check::CycleCheck::execute(
-            directory, cycles, unit_gb, write_buf_kb,
+            directory, work_dir, cycles, unit_gb, write_buf_kb,
         );
 
         // 无任何圈完成 ⇒ 失败
@@ -700,12 +724,36 @@ impl App {
 
     /// 全盘刷新（交互模式）— 通过 stdin 询问参数，返回真实执行结果
     fn run_full_refresh_mode(&self, directory: &str) -> bool {
-        let params = menu::prompt_full_refresh_params();
+        // issue #14：work_dir 必填，交互侧先行询问（⛔ 不用兜底值）
+        let work_dir = match menu::prompt_work_dir() {
+            Some(w) => w,
+            None => {
+                eprintln!("❌ 未提供工作目录，已中止 (work dir required, aborted)");
+                return false;
+            }
+        };
+        let params = menu::prompt_full_refresh_params(work_dir);
         self.execute_full_refresh(directory, params)
     }
 
     /// 全盘刷新（CLI 模式）— 参数来自命令行，全程不读 stdin
     fn run_full_refresh_cli(&self, directory: &str, opts: &RunOptions) -> bool {
+        // issue #14：--work-dir 必填，未配置直接报错（⛔ 不用兜底默认值：
+        // 各系统的临时目录不同，内置默认值会写错位置）
+        let work_dir = match opts.work_dir.as_deref().map(str::trim) {
+            Some(w) if !w.is_empty() => w.to_string(),
+            _ => {
+                eprintln!(
+                    "错误 (Error): 全盘刷新必须显式指定 --work-dir <路径>（工作目录，备份与填充共用）\
+                     \n              full refresh requires --work-dir (work dir required)"
+                );
+                return false;
+            }
+        };
+        if self.ensure_work_dir(&work_dir, opts).is_none() {
+            return false;
+        }
+
         // -cli 下必须显式指定是否保留文件
         let keep = if opts.keep_files {
             true
@@ -719,6 +767,7 @@ impl App {
         };
 
         let params = crate::full_refresh::FullRefreshParams {
+            work_dir,
             keep_files: keep,
             fill_free: opts.fill_free,
             unit_gb: opts.unit_gb.clamp(1, 100),
@@ -727,6 +776,32 @@ impl App {
         self.execute_full_refresh(directory, params)
     }
 
+
+    /// 校验工作目录可用性（issue #14）——必填参数的第二道闸门：
+    /// 1) 路径非空（已在调用处判过）；
+    /// 2) 可创建/可写；
+    /// 3) 与目标盘**不是同一设备**（备份落同盘会被覆写毁掉，必须显式拒绝）。
+    fn ensure_work_dir(&self, work_dir: &str, _opts: &RunOptions) -> Option<()> {
+        let wr = std::path::Path::new(work_dir);
+        if let Err(e) = std::fs::create_dir_all(wr) {
+            eprintln!(
+                "错误 (Error): 无法创建工作目录 {} (cannot create work dir): {}",
+                work_dir, e
+            );
+            return None;
+        }
+        // 可写性探测：建一个探针文件再删掉
+        let probe = wr.join(".coldatafresh-writable-probe");
+        if let Err(e) = std::fs::write(&probe, b"probe") {
+            eprintln!(
+                "错误 (Error): 工作目录不可写 {} (work dir not writable): {}",
+                work_dir, e
+            );
+            return None;
+        }
+        let _ = std::fs::remove_file(&probe);
+        Some(())
+    }
 
     /// 全盘刷新执行核心 — 交互与 CLI 共用，全程无 stdin
     fn execute_full_refresh(
@@ -778,6 +853,7 @@ impl App {
         // 执行全盘刷新（目录空间始终填充，空闲空间由 fill_free 控制）
         FullRefresh::execute(
             directory,
+            &params.work_dir,
             params.keep_files,
             params.fill_free,
             dir_size,

@@ -88,6 +88,11 @@ struct Args {
     #[arg(short = 'b', long)]
     buffer_size: Option<u32>,
 
+    /// 全盘刷新：工作目录（**必填**）——备份落点与填充文件临时落点两者共用。
+    /// ⛔ 不提供兜底默认值：各系统的临时目录不同，内置默认值会写错位置（issue #14）
+    #[arg(long, value_name = "PATH")]
+    work_dir: Option<String>,
+
     /// 全盘刷新：保留已使用空间中的文件（备份→删除→填充→恢复）
     #[arg(long, conflicts_with = "no_keep_files")]
     keep_files: bool,
@@ -151,6 +156,7 @@ fn main() {
         skip_smaller: args.skip_smaller,
         yes: args.yes,
         buffer_size_mb: args.buffer_size,
+        work_dir: args.work_dir,
         keep_files: args.keep_files,
         no_keep_files: args.no_keep_files,
         fill_free: args.fill_free,
