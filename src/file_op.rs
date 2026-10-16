@@ -126,6 +126,9 @@ pub fn checksum_file(path: &Path) -> Result<u32, std::io::Error> {
 /// 刷新单个文件（智能模式 — 保持原内容，通过重写激活）
 /// 小文件（≤ 缓冲区容量）整片读入→整片写回→整片读回校验
 /// 大文件（> 缓冲区容量）分块原地覆写 + 分块读回校验
+///
+/// 注意：本路径作用于**文件**（走文件系统）；绕过文件系统的块设备直写在 `block_dev.rs`，
+/// 由跑圈校验（cycle_check）与全盘刷新新增后端使用。
 pub fn refresh_file(path: &str) -> Result<u64, String> {
     let p = Path::new(path);
 

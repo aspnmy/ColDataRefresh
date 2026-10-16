@@ -8,7 +8,9 @@
 use clap::Parser;
 
 mod app;
+mod block_dev;
 mod config;
+mod cycle_check;
 mod dashboard;
 mod file_op;
 mod full_refresh;
@@ -47,6 +49,14 @@ struct Args {
     /// 是否执行TRIM操作
     #[arg(short = 't', long)]
     trim: bool,
+
+    /// 是否执行跑圈校验（写入 1GB 随机数据 + 校验码，写满后回读校验以定位坏块）
+    #[arg(short = 'c', long)]
+    cycle_check: bool,
+
+    /// 跑圈校验：圈数（写入 → 校验 → 报告 → 删除 → TRIM 为一圈）
+    #[arg(long, value_name = "N", default_value_t = 2)]
+    cycles: u64,
 
     /// 是否启用详细日志
     #[arg(short = 'v', long)]
@@ -106,6 +116,8 @@ fn main() {
         path: args.path,
         full_refresh: args.full_refresh,
         trim: args.trim,
+        cycle_check: args.cycle_check,
+        cycles: args.cycles,
         age: args.age,
         skip_smaller: args.skip_smaller,
         yes: args.yes,

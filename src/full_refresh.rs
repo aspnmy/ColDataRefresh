@@ -109,10 +109,10 @@ impl FullRefresh {
             println!("\n⚠️  未备份文件，无法恢复 (no backup, cannot restore)");
         }
 
-        // 6. 执行最终 TRIM
+        // 6. 执行最终 TRIM（底层直下，issue #5）
         println!("\n开始执行最终 TRIM 优化... (Running final TRIM...)");
         if let Some(device) = platform::resolve_device_name(directory) {
-            platform::trim_volume(&device);
+            platform::trim_volume_direct(&device);
         }
 
         println!("\n全盘刷新完成! (Full refresh completed)");
@@ -356,8 +356,49 @@ fn remove_readonly(_path: &Path) {}
 /// dir_size: 目录本身的已用空间（始终填充）
 /// fill_free: 填充完目录空间后是否继续填充空闲空间
 /// unit_size: 填充空闲空间时的每文件写入单位
+///
+/// 优先走**块设备直写**（issues #3/#4：绕过文件系统，避免元数据 / 页缓存拖垮导致卡死）；
+/// 无法解析块设备或安全闸门拒绝时，回退原有文件系统写入路径。
 fn fill_available_space(directory: &str, unit_size: u64, dir_size: u64,
                         fill_free: bool, buf_kb: u64) -> (u64, f64) {
+    // ── 块设备直写后端（优先） ──
+    if let Some(dev) = platform::resolve_block_device(directory) {
+        match crate::block_dev::BlockDevice::open(&dev) {
+            Ok(bd) => {
+                println!(
+                    "直写后端 (direct-write backend): {} (扇区 {}B, 容量 {})",
+                    dev,
+                    bd.alignment(),
+                    format_size(bd.info().capacity)
+                );
+                // 目标范围：整个设备（fill_free）或按 dir_size 限定
+                let total = if fill_free { bd.info().capacity } else { dir_size };
+                let start = std::time::Instant::now();
+                match crate::block_dev::direct_fill(&bd, 0, total, unit_size, buf_kb) {
+                    Ok((units, written)) => {
+                        let secs = start.elapsed().as_secs_f64().max(0.001);
+                        let speed = written as f64 / secs / 1_048_576.0;
+                        println!(
+                            "\n直写完成 (direct fill done): {} 个单元, 累积写入 {}",
+                            units,
+                            format_size(written)
+                        );
+                        return (written, speed);
+                    }
+                    Err(e) => {
+                        println!("⚠️  直写失败 (direct fill failed): {}，回退文件系统写入 (fallback)", e);
+                        logger().log(&format!("块设备直写失败，回退: {}", e), "WARNING");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("直写不可用 (direct-write unavailable): {}，回退文件系统写入 (fallback)", e);
+            }
+        }
+    }
+
+    // ── 文件系统写入路径（回退，保持原行为） ──
+    println!("使用文件系统写入路径 (filesystem write path)");
     let work_dir = Path::new(directory).join("$aspnmytools");
     let _ = std::fs::create_dir_all(&work_dir);
 

@@ -18,6 +18,10 @@ pub struct RunOptions {
     pub path: Option<String>,
     pub full_refresh: bool,
     pub trim: bool,
+    /// 跑圈校验模式（写入 1GB 随机数据 + 校验码，写满后回读校验以定位坏块）
+    pub cycle_check: bool,
+    /// 跑圈校验圈数（默认 2）
+    pub cycles: u64,
     pub age: Option<u32>,
     pub skip_smaller: Option<u64>,
     pub yes: bool,
@@ -90,18 +94,28 @@ impl App {
             eprintln!("错误 (Error): --full-refresh 与 --trim 不能同时使用 (mutually exclusive)");
             return 2;
         }
+        if opts.cycle_check && (opts.full_refresh || opts.trim) {
+            eprintln!("错误 (Error): --cycle-check 不能与 --full-refresh / --trim 同时使用 (mutually exclusive)");
+            return 2;
+        }
 
         // 3) 智能模式必须有 -a
-        if !opts.full_refresh && !opts.trim && opts.age.is_none() {
+        if !opts.full_refresh && !opts.trim && !opts.cycle_check && opts.age.is_none() {
             eprintln!("错误 (Error): 智能模式必须指定数据时效 (data age required) -a <天数/days>");
             return 2;
         }
 
         // 4) 破坏性操作必须显式 -y
-        if (opts.full_refresh || opts.trim) && !opts.yes {
+        if (opts.full_refresh || opts.trim || opts.cycle_check) && !opts.yes {
             eprintln!(
                 "错误 (Error): {} 模式会破坏数据，-cli 下必须显式加 -y 确认 (destructive, -y required)",
-                if opts.full_refresh { "全盘刷新 (full-refresh)" } else { "TRIM" }
+                if opts.full_refresh {
+                    "全盘刷新 (full-refresh)"
+                } else if opts.cycle_check {
+                    "跑圈校验 (cycle-check)"
+                } else {
+                    "TRIM"
+                }
             );
             return 2;
         }
@@ -109,6 +123,18 @@ impl App {
         self.dashboard.full_refresh = opts.full_refresh;
         self.dashboard.trim_mode = opts.trim;
         self.dashboard.working_directory = directory.clone();
+
+        // 跑圈校验（CLI 路径）
+        if opts.cycle_check {
+            let cycles = opts.cycles.max(1);
+            let unit_gb = opts.unit_gb.clamp(1, 100);
+            let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
+            return if self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb) {
+                0
+            } else {
+                1
+            };
+        }
 
         // TRIM
         if opts.trim {
@@ -144,6 +170,7 @@ impl App {
     fn run_interactive(&mut self, opts: RunOptions) -> i32 {
         let full_refresh = opts.full_refresh;
         let trim_mode = opts.trim;
+        let cycle_check = opts.cycle_check;
         let cli_age = opts.age;
         let cli_skip_smaller_mb = opts.skip_smaller;
 
@@ -155,10 +182,10 @@ impl App {
             self.stats = Stats::default();
 
             // 获取模式选择
-            let (mode_full, mode_trim) = if !full_refresh && !trim_mode {
+            let (mode_full, mode_trim, mode_cycle) = if !full_refresh && !trim_mode && !cycle_check {
                 self.show_mode_menu()
             } else {
-                (full_refresh, trim_mode)
+                (full_refresh, trim_mode, cycle_check)
             };
 
             // 确认操作
@@ -166,7 +193,9 @@ impl App {
                 if !self.confirm_full_refresh() {
                     continue;
                 }
-            } else if mode_trim && !self.confirm_trim() {
+            } else if (mode_trim && !self.confirm_trim())
+                || (mode_cycle && !self.confirm_cycle_check())
+            {
                 continue;
             }
 
@@ -179,6 +208,18 @@ impl App {
             // TRIM 模式 — 直接执行
             if mode_trim {
                 self.run_trim_mode(&directory);
+                if !self.ask_return_to_menu() {
+                    break;
+                }
+                continue;
+            }
+
+            // 跑圈校验模式（交互：询问圈数，默认 2）
+            if mode_cycle {
+                let cycles = opts.cycles.max(1);
+                let unit_gb = opts.unit_gb.clamp(1, 100);
+                let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
+                self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb);
                 if !self.ask_return_to_menu() {
                     break;
                 }
@@ -390,7 +431,7 @@ impl App {
         }
     }
 
-    fn show_mode_menu(&self) -> (bool, bool) {
+    fn show_mode_menu(&self) -> (bool, bool, bool) {
         crate::terminal::Terminal::clear();
         let admin = if platform::is_admin() { " [管理员/Admin]" } else { "" };
         let os_info = platform::get_os_display();
@@ -408,27 +449,32 @@ impl App {
         println!("1. 智能模式 (Smart Mode) (推荐/Recommended) - 保留原文件内容，仅激活冷数据 (keep contents, refresh cold data only)");
         println!("2. 全盘刷新模式 (Full Refresh Mode) (所有文件全部丢失无法找回/ALL DATA LOST, UNRECOVERABLE) - 将文件内容替换为 FF 值 (overwrite with 0xFF)");
         println!("3. TRIM优化模式 (TRIM Optimization Mode) (如需找回数据不要使用/CANNOT recover deleted data) - 通知SSD哪些数据块无效 (notify SSD which blocks are invalid)");
+        println!("4. 跑圈校验模式 (Cycle Check Mode) (所有文件全部丢失无法找回/ALL DATA LOST, UNRECOVERABLE) - 1GB随机数据+校验码，写满后回读校验以定位坏块 (locate bad blocks)");
         println!("{}", eq);
 
         loop {
-            print!("请选择操作模式 (Select mode) [1/2/3]: ");
+            print!("请选择操作模式 (Select mode) [1/2/3/4]: ");
             io::stdout().flush().ok();
             let mut input = String::new();
             io::stdin().read_line(&mut input).ok();
             match input.trim() {
                 "1" => {
                     logger().log("用户选择操作模式: 智能模式", "INFO");
-                    return (false, false);
+                    return (false, false, false);
                 }
                 "2" => {
                     logger().log("用户选择操作模式: 全盘刷新模式", "INFO");
-                    return (true, false);
+                    return (true, false, false);
                 }
                 "3" => {
                     logger().log("用户选择操作模式: TRIM模式", "INFO");
-                    return (false, true);
+                    return (false, true, false);
                 }
-                _ => println!("无效的选择，请输入 1、2 或 3 (Invalid choice, enter 1, 2 or 3)"),
+                "4" => {
+                    logger().log("用户选择操作模式: 跑圈校验模式", "INFO");
+                    return (false, false, true);
+                }
+                _ => println!("无效的选择，请输入 1、2、3 或 4 (Invalid choice, enter 1, 2, 3 or 4)"),
             }
         }
     }
@@ -475,6 +521,26 @@ impl App {
         }
 
         logger().log("用户已确认，开始执行TRIM优化操作", "INFO");
+        true
+    }
+
+    /// 跑圈校验确认 — 破坏性操作，交互模式下需输入 yes
+    fn confirm_cycle_check(&self) -> bool {
+        println!("\n⚠️  警告 (WARNING): 正在使用跑圈校验模式 (Cycle Check Mode)！");
+        println!("   此模式会写入 1GB 随机数据并覆写整盘空间，所有文件内容将丢失且无法找回");
+        println!("   (writes 1GB random blocks over free space; ALL DATA LOST, UNRECOVERABLE)！");
+        println!();
+
+        print!("请输入 'yes' 确认执行跑圈校验操作 (type 'yes' to confirm): ");
+        io::stdout().flush().ok();
+        let mut c = String::new();
+        io::stdin().read_line(&mut c).ok();
+        if c.trim().to_lowercase() != "yes" {
+            println!("操作已取消 (Cancelled)");
+            return false;
+        }
+
+        logger().log("用户已确认，开始执行跑圈校验操作", "INFO");
         true
     }
 
@@ -541,6 +607,49 @@ impl App {
                 }
                 _ => println!("无效的选择，请输入 1 或 2 (Invalid choice, enter 1 or 2)"),
             }
+        }
+    }
+
+    /// 跑圈校验（CLI 路径）— 参数来自命令行，全程不读 stdin
+    fn run_cycle_check_cli(
+        &self,
+        directory: &str,
+        cycles: u64,
+        unit_gb: u64,
+        write_buf_kb: u64,
+    ) -> bool {
+        crate::terminal::Terminal::clear();
+        let eq = "=".repeat(50);
+        println!("{}", eq);
+        println!("          跑圈校验模式 (Cycle Check Mode)");
+        println!("{}", eq);
+        println!("目标路径 (Target):     {}", directory);
+        println!("圈数 (Cycles):         {}", cycles);
+        println!("单元大小 (Unit):       {} GB (1GB 随机数据 + CRC32 校验码)", unit_gb);
+        println!("写入缓冲区 (Buffer):   {} KB", write_buf_kb);
+        println!("每圈流程 (Per cycle):  写入 → 校验 → 保存报告 → 删除 → TRIM");
+        println!("{}", eq);
+
+        let stats = crate::cycle_check::CycleCheck::execute(
+            directory, cycles, unit_gb, write_buf_kb,
+        );
+
+        // 无任何圈完成 ⇒ 失败
+        if stats.is_empty() {
+            return false;
+        }
+
+        // 存在校验失败区块 ⇒ 返回非零（但报告已保存，便于定位坏块）
+        let total_failed: u64 = stats.iter().map(|s| s.failed).sum();
+        if total_failed > 0 {
+            println!(
+                "\n⚠️  共发现 {} 个校验失败区块，详见报告 (see report in logs/)",
+                total_failed
+            );
+            false
+        } else {
+            println!("\n✅ 全部区块校验通过 (all blocks verified)");
+            true
         }
     }
 
