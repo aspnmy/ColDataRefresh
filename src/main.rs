@@ -23,7 +23,7 @@ mod terminal;
 #[derive(Parser, Debug)]
 #[command(
     name = "coldatafresh",
-    version = "5.0.3",
+    version = "5.0.4",
     about = "冷数据维护工具 - 优化SSD性能，延长使用寿命"
 )]
 //// ============================ CLI 模式参数 (CLI mode options) ============================
@@ -122,7 +122,7 @@ fn main() {
     .try_init();
 
     // 设置窗口标题
-    terminal::Terminal::set_window_title("冷数据维护工具 v5.0.3");
+    terminal::Terminal::set_window_title("冷数据维护工具 v5.0.4");
 
     // 初始化日志器
     log::logger();

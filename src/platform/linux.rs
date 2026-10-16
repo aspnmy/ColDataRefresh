@@ -371,3 +371,12 @@ pub fn block_direct_discard(device: &str, offset: u64, len: u64) -> Result<(), S
     }
     Ok(())
 }
+
+//// ===================== 文件属性 (file attributes) =====================
+// 平台专有的「文件属性操作」——原散在 `full_refresh.rs`，按 issue #7 移入分册。
+
+/// 移除文件的只读属性 —— Linux 无该概念，空操作
+pub fn clear_readonly(_path: &std::path::Path) {}
+
+/// 保留文件的创建时间 —— Linux 无创建时间概念，空操作
+pub fn preserve_creation_time(_path: &std::path::Path) {}

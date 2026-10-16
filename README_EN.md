@@ -1,4 +1,4 @@
-# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.3
+# ColDataRefresh — SSD Cold Data Maintenance Tool v5.0.4
 
 > **This branch (`v5`) is the Rust main line.**
 > Original author & upstream repository (Python original): **infrost** — <https://github.com/infrost/ColDataRefresh.git>
@@ -63,7 +63,13 @@ coldatafresh --cli -p "/data" -a 365 -s 10 -v
 | `-a`, `--age` | File age threshold in days (required in smart mode) |
 | `-f`, `--full-refresh` | Full disk refresh mode |
 | `-t`, `--trim` | TRIM optimization mode |
-| `-y`, `--yes` | Confirmation for destructive operations (required with `-f` / `-t` under `--cli`) |
+| `-c`, `--cycle-check` | Cycle Check mode (1GB random + CRC32 checksum, read-back verification to locate bad blocks) |
+| `--cycles` | Number of cycle-check cycles (default 2) |
+| `-H`, `--heatmap` | LBA Heat Map mode (read-only sampling; buckets block-layer I/O by LBA) |
+| `--bucket-mib` | Heat map: bucket size in MiB (default 64) |
+| `--hot-threshold` | Heat map: hot threshold in accesses (default 100) |
+| `--warm-threshold` | Heat map: warm threshold in accesses (default 10) |
+| `-y`, `--yes` | Confirmation for destructive operations (required with `-f` / `-t` / `-c` under `--cli`; `-H` is read-only and does not need it) |
 | `-b`, `--buffer-size` | Processing buffer size in MB (effective under `--cli`) |
 | `--keep-files` | Full refresh: keep files (backup → delete → fill → restore); one of the two is required with `-cli -f` |
 | `--no-keep-files` | Full refresh: do not keep files (unrecoverable) |
@@ -104,9 +110,9 @@ This project uses GitHub Actions for automated cross-platform release builds.
 Trigger a release:
 ```bash
 git checkout v5.0.0
-git tag v5.0.3
+git tag v5.0.4
 git push origin v5.0.0
-git push origin v5.0.3
+git push origin v5.0.4
 ```
 
 Build matrix (11 targets):
@@ -144,6 +150,16 @@ Build matrix (11 targets):
 - **No runtime dependencies** — single static binary
 
 ## Changelog
+
+### v5.0.4 — Platform split, Cycle Check, LBA Heat Map, Memory Release
+- **Multi-architecture platform split**: `platform.rs` → `platform/{mod,linux,windows,darwin}.rs`, `terminal.rs` → `terminal/{mod,linux,windows,darwin}.rs`; block-device primitives (`O_DIRECT` write/read, `ioctl(BLKDISCARD)` TRIM) and file-attribute ops all moved into their per-OS modules; the macOS module is no longer a stub (real `statfs` / `geteuid` / `df -P` / `diskutil` / `sw_vers`)
+- **New Cycle Check mode** (`-c` / `--cycle-check`, default 2 cycles): writes 1GB random data per block with a CRC32 checksum, then reads back and verifies each block; report goes to `logs/` — used to locate the block containing a bad NAND cell
+- **New LBA Heat Map mode** (`-H` / `--heatmap`): samples block-layer I/O via tracefs and buckets by LBA into hot / warm / cold / dead; emits a CLI heat map plus a JSONL report — identifies **blocks long unread and unwritten** (the ones worth refreshing) instead of blindly rewriting the whole disk (hot blocks should not be rewritten)
+- **New interactive menu item 5** (LBA Heat Map, read-only sampling — no `yes` confirmation needed)
+- **UI / flow separation**: new `menu.rs` holds the interactive UI (menu / confirmations / prompts); `app.rs` keeps only business flow and execution
+- **Memory leak fixed**: `AlignedBuf` changed from "manual allocation never freed on drop" to a self-owning `Vec<u8>` with an aligned offset window ⇒ freed automatically on drop (no more false hangs from buffer accumulation during long runs, especially on Windows)
+- **`perf` detection fixed**: now runs `perf --version` to decide (checking `which perf` alone misreports — Debian's `/usr/bin/perf` is only a wrapper script)
+- ⚠️ Windows / macOS modules and the LBA heat map are **not yet verified on real hardware** (this host is Linux and only compiles the host-platform branch; pending CI-built packages)
 
 ### v5.0.3 — Parameterized Full Refresh for CLI
 - **Full refresh under `--cli` no longer reads stdin at all**: added `--keep-files` / `--no-keep-files` (one required with `-cli -f`), `--fill-free`, `--unit-gb`, `--write-buf-kb`, replacing the previous 5 interactive prompts

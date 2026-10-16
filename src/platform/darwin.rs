@@ -185,3 +185,22 @@ pub fn block_direct_discard(device: &str, _offset: u64, _len: u64) -> Result<(),
         device
     ))
 }
+
+//// ===================== 文件属性 (file attributes) =====================
+// 平台专有的「文件属性操作」——原散在 `full_refresh.rs`，按 issue #7 移入分册。
+
+/// 移除文件的只读属性 —— macOS 用 `chmod +w`（POSIX 权限位）
+pub fn clear_readonly(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perm = meta.permissions();
+        let mode = perm.mode();
+        if mode & 0o200 == 0 {
+            perm.set_mode(mode | 0o200);
+            let _ = std::fs::set_permissions(path, perm);
+        }
+    }
+}
+
+/// 保留文件的创建时间 —— macOS 无独立 API，空操作（birthtime 不可写）
+pub fn preserve_creation_time(_path: &std::path::Path) {}

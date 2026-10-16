@@ -6,7 +6,7 @@
 - v6.0版本开始 将提供i18n-语义包，需要其他语言的，请对i18n-zh.lang进行翻译即可 
 - 如需预览v6.0版本请向邮箱写邮件说明应用场景，将给予我们内部仓库的协作者只读权限
 
-# ColDataRefresh — SSD 冷数据维护系统 v5.0.3
+# ColDataRefresh — SSD 冷数据维护系统 v5.0.4
 
 > **本分支（v5）为 Rust 主线。**
 > 原始作者与原始仓库（Python 原版）：**infrost** — <https://github.com/infrost/ColDataRefresh.git>
@@ -71,7 +71,13 @@ coldatafresh --cli -p "/data" -a 365 -s 10 -v
 | `-a`, `--age` | 文件年龄阈值（天，智能模式必填） |
 | `-f`, `--full-refresh` | 全盘刷新模式 |
 | `-t`, `--trim` | TRIM 优化模式 |
-| `-y`, `--yes` | 破坏性操作确认（`--cli` 下使用 `-f` / `-t` 时必填） |
+| `-c`, `--cycle-check` | 跑圈校验模式（1GB 随机 + CRC32 校验码，写满回读定位坏块） |
+| `--cycles` | 跑圈校验圈数（默认 2） |
+| `-H`, `--heatmap` | LBA 热力图模式（只读采样，抓块层 IO 按 LBA 分桶统计冷热） |
+| `--bucket-mib` | 热力图：分桶粒度（MiB，默认 64） |
+| `--hot-threshold` | 热力图：热桶阈值（访问次数，默认 100） |
+| `--warm-threshold` | 热力图：温桶阈值（访问次数，默认 10） |
+| `-y`, `--yes` | 破坏性操作确认（`--cli` 下使用 `-f` / `-t` / `-c` 时必填；`-H` 为只读采样，无需） |
 | `-b`, `--buffer-size` | 处理缓冲区大小（MB，`--cli` 下生效） |
 | `--keep-files` | 全盘刷新：保留文件（备份→删除→填充→恢复）；`-cli -f` 必填其一 |
 | `--no-keep-files` | 全盘刷新：不保留文件（数据不可恢复） |
@@ -112,9 +118,9 @@ cargo build --release
 触发发布：
 ```bash
 git checkout v5.0.0
-git tag v5.0.3
+git tag v5.0.4
 git push origin v5.0.0
-git push origin v5.0.3
+git push origin v5.0.4
 ```
 
 构建矩阵（11 个目标平台）：
@@ -152,6 +158,16 @@ git push origin v5.0.3
 - **零运行时依赖** — 单文件静态编译
 
 ## 更新日志
+
+### v5.0.4 — 平台分册 + 跑圈校验 + LBA 热力图 + 内存释放
+- **平台多架构分册**：`platform.rs` → `platform/{mod,linux,windows,darwin}.rs`，`terminal.rs` → `terminal/{mod,linux,windows,darwin}.rs`；块设备底层（`O_DIRECT` 直写/直读、`ioctl(BLKDISCARD)` 直 TRIM）与文件属性操作全部移入对应分册；macOS 分册由占位改为等价实现（`statfs` / `geteuid` / `df -P` / `diskutil` / `sw_vers`）
+- **新增跑圈校验模式**（`-c` / `--cycle-check`，默认 2 圈）：按 1GB 写入随机数据并留 CRC32 校验码，写满后回读校验，报告落 `logs/`，用于定位 NAND 坏块所在区块
+- **新增 LBA 热力图模式**（`-H` / `--heatmap`）：经 tracefs 抓块层 IO、按 LBA 分桶统计冷热（hot / warm / cold / dead），输出 CLI 热力图与 JSONL 报告；用于识别**长期不读不写的冷块**（该刷）而非无差别全盘刷（hot 块不该刷）
+- **新增交互菜单第 5 项**（LBA 热力图，只读采样，无需 `yes` 确认）
+- **界面与流程分离**：新增 `menu.rs` 承载交互界面（菜单/确认/提问），`app.rs` 只留业务流程与执行
+- **修复内存泄漏**：`AlignedBuf` 由「手工分配、析构不释放」改为自持 `Vec<u8>` + 对齐偏移窗口 ⇒ 析构自动归还（长时间运行、尤其 Windows 不会再因缓冲累积假死）
+- **修复 `perf` 探测**：改为实跑 `perf --version` 判定（只看 `which perf` 会误判 —— Debian 的 `/usr/bin/perf` 只是包装脚本）
+- ⚠️ Windows / macOS 分册与 LBA 热力图**尚未在真机验证**（本机 Linux 只编宿主平台分支；待 CI 出包后实测）
 
 ### v5.0.3 — 全盘刷新 CLI 参数化
 - **全盘刷新在 `--cli` 下彻底不读 stdin**：新增 `--keep-files` / `--no-keep-files`（`-cli -f` 必填其一）、`--fill-free`、`--unit-gb`、`--write-buf-kb`，替代原有的 5 处交互提问

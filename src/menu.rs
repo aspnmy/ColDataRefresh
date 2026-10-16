@@ -59,7 +59,7 @@ pub fn show_startup_banner() {
     let eq = "=".repeat(50);
 
     println!("{}", eq);
-    println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
+    println!("SSD掉速激活-冷数据维护系统 v5.0.4{}", admin);
     println!("运行平台 (Platform): {}", os_info);
     println!("作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294");
     println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
@@ -74,7 +74,7 @@ pub fn show_mode_menu() -> ModeChoice {
     let eq = "=".repeat(50);
 
     println!("{}", eq);
-    println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
+    println!("SSD掉速激活-冷数据维护系统 v5.0.4{}", admin);
     println!("运行平台 (Platform): {}  |  作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294", os_info);
     println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
     println!("{}", eq);

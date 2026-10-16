@@ -249,3 +249,56 @@ pub fn block_direct_discard(device: &str, _offset: u64, _len: u64) -> Result<(),
         device
     ))
 }
+
+//// ===================== 文件属性 (file attributes) =====================
+// 平台专有的「文件属性操作」——原散在 `full_refresh.rs`，按 issue #7 移入分册。
+
+/// 移除文件的只读属性 —— Windows 用 `attrib -R`（只读位会阻止删除）
+pub fn clear_readonly(path: &std::path::Path) {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.file_attributes() & FILE_ATTRIBUTE_READONLY != 0 {
+            let _ = std::process::Command::new("attrib")
+                .args(["-R", &path.to_string_lossy()])
+                .output();
+        }
+    }
+}
+
+/// 保留文件的创建时间 —— Windows 用 Win32 `SetFileTime`
+pub fn preserve_creation_time(path: &std::path::Path) {
+    use std::os::windows::fs::MetadataExt;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    let ctime_raw = meta.creation_time();
+    if ctime_raw > 0 {
+        let _ = set_file_creation_time_win(path, ctime_raw);
+    }
+}
+
+/// 用 Win32 `SetFileTime` 设置文件创建时间
+fn set_file_creation_time_win(
+    path: &std::path::Path,
+    creation_time_raw: u64,
+) -> Result<(), String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("无法打开文件 {}: {}", path.display(), e))?;
+
+    let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+    let ft: *const windows_sys::Win32::Foundation::FILETIME =
+        &creation_time_raw as *const u64 as *const windows_sys::Win32::Foundation::FILETIME;
+
+    let result = unsafe { SetFileTime(handle, ft, std::ptr::null(), std::ptr::null()) };
+    if result == 0 {
+        Err(format!("设置创建时间失败: {}", path.display()))
+    } else {
+        Ok(())
+    }
+}

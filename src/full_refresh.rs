@@ -187,14 +187,8 @@ fn backup_files(source: &str, destination: &Path) -> bool {
                         FileTime::from_system_time(mtime),
                     );
                 }
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::MetadataExt;
-                    let ctime_raw = meta.creation_time();
-                    if ctime_raw > 0 {
-                        let _ = set_file_creation_time_win(&dest, ctime_raw);
-                    }
-                }
+                // 平台专有的创建时间保留（Windows 用 Win32 SetFileTime，其他平台空操作）
+                platform::preserve_creation_time(&dest);
             }
         }
     }
@@ -290,7 +284,8 @@ fn delete_directory_contents(dir: &Path) -> Result<(u64, u64), String> {
         let mut deleted = false;
         for _attempt in 0..3 {
             // Windows: 先移除只读属性
-            remove_readonly(&path);
+            // 平台专有的只读属性清除（Windows 用 attrib -R，其他平台空操作）
+            platform::clear_readonly(&path);
 
             let result = if entry.file_type().is_dir() {
                 std::fs::remove_dir_all(&path)
@@ -341,25 +336,6 @@ fn delete_directory_contents(dir: &Path) -> Result<(u64, u64), String> {
         Ok((success, failure))
     }
 }
-
-/// 移除文件的只读属性（Windows 专用，其他平台无操作）
-#[cfg(windows)]
-fn remove_readonly(path: &Path) {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_READONLY: u32 = 0x0001;
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.file_attributes() & FILE_ATTRIBUTE_READONLY != 0 {
-            // 使用 attrib 命令移除只读属性
-            let _ = std::process::Command::new("attrib")
-                .args(["-R", &path.to_string_lossy()])
-                .output();
-        }
-    }
-}
-
-/// 非 Windows 平台无操作
-#[cfg(not(windows))]
-fn remove_readonly(_path: &Path) {}
 
 /// 填充空间
 /// dir_size: 目录本身的已用空间（始终填充）
@@ -492,28 +468,5 @@ fn find_backup_drive(target_path: &str) -> Option<std::path::PathBuf> {
         Some(std::path::PathBuf::from(r"D:\"))
     } else {
         candidates.first().map(|d| std::path::PathBuf::from(format!("{}:\\", d)))
-    }
-}
-
-/// Windows 下使用 Win32 API 设置文件创建时间
-#[cfg(windows)]
-fn set_file_creation_time_win(path: &std::path::Path, creation_time_raw: u64) -> Result<(), String> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::SetFileTime;
-
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|e| format!("无法打开文件 {}: {}", path.display(), e))?;
-
-    let handle = file.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-    let ft: *const windows_sys::Win32::Foundation::FILETIME =
-        &creation_time_raw as *const u64 as *const windows_sys::Win32::Foundation::FILETIME;
-
-    let result = unsafe { SetFileTime(handle, ft, std::ptr::null(), std::ptr::null()) };
-    if result == 0 {
-        Err(format!("设置创建时间失败: {}", path.display()))
-    } else {
-        Ok(())
     }
 }
