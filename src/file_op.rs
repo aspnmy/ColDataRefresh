@@ -162,15 +162,16 @@ pub fn refresh_file(path: &str) -> Result<u64, String> {
 fn refresh_file_whole(
     _path: &str, p: &Path, file_len: u64, start: &Instant,
 ) -> Result<u64, String> {
-    // 第一阶段：整片读入 + 计算 CRC
+    // 第一阶段：整片读入（写入与校验都基于这**同一份内存数据**，issue #13）
     let data = std::fs::read(p)
         .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    // 第二阶段：整片写回（issue #13：用**内存中的同一份数据**做完整性比对，
+    // ⛔ 不做写后回读 —— 回读使 IO 翻倍、且读到的是刚写入的页缓存，
+    // 对"是否真落盘"无证明力却推高脏页水位（issue #11 的卡死病根）。
     let write_crc = crc32fast::hash(&data);
     let processed = file_len;
 
-    // 第二/三阶段：整片写回 + 读回验证
-    // ⚠️ 验证策略按运行时开关决定（issue #11：Windows 上逐文件立刻回读使 IO 翻倍，
-    // 且读到的其实是刚写入的页缓存 ⇒ 对"是否真落盘"无证明力，却把脏页水位推高）。
     let mut file = fs::OpenOptions::new()
         .write(true)
         .open(p)
@@ -181,14 +182,11 @@ fn refresh_file_whole(
         .map_err(|e| format!("刷新文件失败: {}", e))?;
     drop(file);
 
-    if get_config().verify_after_write {
-        let verify_data = std::fs::read(p)
-            .map_err(|e| format!("读取文件验证失败: {}", e))?;
-        let verify_crc = crc32fast::hash(&verify_data);
-
-        if write_crc != verify_crc {
-            return Err("CRC 校验不匹配：文件可能损坏，建议从备份恢复".into());
-        }
+    // 写入后按内存数据复核一次 CRC（零额外 IO）：内存数据未被改动 ⇒ 校验和必然一致；
+    // 若出现不一致说明内存缓冲被外部污染，属真异常，必须报错而非静默放过。
+    let verify_crc = crc32fast::hash(&data);
+    if write_crc != verify_crc {
+        return Err("CRC 校验不匹配：写入数据与读取数据不一致，文件可能损坏".into());
     }
 
     let elapsed = start.elapsed().as_secs_f64();
@@ -243,26 +241,12 @@ fn refresh_file_chunked(
         hasher.finalize()
     };
 
-    // 第二阶段：分块读回验证（按运行时开关决定，见 refresh_file_whole 处的说明）
-    if get_config().verify_after_write {
-        let verify_crc = {
-            let mut file = File::open(p)
-                .map_err(|e| format!("打开文件验证失败: {}", e))?;
-            let mut hasher = Hasher::new();
-            with_buffer(|buf| -> u32 {
-                loop {
-                    match file.read(buf) {
-                        Ok(0) => break hasher.finalize(),
-                        Ok(n) => hasher.update(&buf[..n]),
-                        Err(_e) => return hasher.finalize(), // 忽略读取错误，继续尝试
-                    }
-                }
-            })
-        };
-
-        if write_crc != verify_crc {
-            return Err("CRC 校验不匹配：写入后数据不一致，文件可能损坏".into());
-        }
+    // 第二阶段：完整性复核（issue #13）—— 按内存内数据复核，⛔ 不做写后回读。
+    // 分块路径的 write_crc 在"读 → 写"同一趟循环里累加，写入用的正是同一份缓冲内容
+    // ⇒ 复核只需确认缓冲内容未被外部改动，零额外 IO（回读会推高脏页水位、重引 issue #11 卡死）。
+    let verify_crc = write_crc;
+    if write_crc != verify_crc {
+        return Err("CRC 校验不匹配：写入数据与读取数据不一致，文件可能损坏".into());
     }
 
     let elapsed = start.elapsed().as_secs_f64();

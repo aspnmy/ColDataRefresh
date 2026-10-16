@@ -42,7 +42,7 @@ pub struct RunOptions {
     pub unit_gb: u64,
     pub write_buf_kb: u64,
     /// 智能模式：写入后是否立刻回读校验（issue #11，默认关闭）
-    pub verify_after_write: bool,
+    pub verify_readback: bool,
 }
 
 /// 应用控制器 — 交互菜单与模式路由
@@ -184,7 +184,7 @@ impl App {
         logger().log(
             &format!(
                 "[CLI] 目录='{}', 时效={}天, 跳过小文件={}, 缓冲区={}MB, 写后校验={}",
-                directory, min_days, skip_small, self.dashboard.buffer_size_mb, opts.verify_after_write
+                directory, min_days, skip_small, self.dashboard.buffer_size_mb, opts.verify_readback
             ),
             "INFO",
         );
@@ -355,6 +355,50 @@ impl App {
 
         // 扫描完成后立即刷新仪表盘，让用户看到文件数量和阶段切换
         self.dashboard.update(&self.stats, "扫描完成 (Scan done)");
+
+        // issue #13 第 3 条：刷写前做容量预检 —— 智能模式是「实时写入磁盘空闲区域」，
+        // 与全盘模式（cp→del→trim dead→写回）不同，必须确认空闲区域装得下待处理数据。
+        // ⚠️ 智能模式的写入是**原地覆写**（不额外占用空闲空间），但读→写过程中每文件需
+        // 一份内存缓冲，且写入失败时可能留下部分新数据 ⇒ 保守取「待处理总量」与
+        // 「空闲空间」直接比对：装不下就中止（按用户裁定，不自动转全盘模式）。
+        {
+            let (_total, used, free) = crate::platform::get_disk_space(
+                std::path::Path::new(directory),
+            );
+            let need = self.stats.total_bytes;
+            if need > free {
+                crate::terminal::Terminal::clear();
+                let eq = "=".repeat(50);
+                println!("\n{}", eq);
+                println!("  ❌ 空闲空间不足，已中止 (insufficient free space, aborted)");
+                println!("{}", eq);
+                println!(
+                    "  待处理数据 (pending): {}",
+                    crate::config::format_size(need)
+                );
+                println!("  可用空间 (free):      {}", crate::config::format_size(free));
+                println!("  磁盘已用 (used):      {}", crate::config::format_size(used));
+                println!("\n  提示 (Hint): 请清理磁盘或改按龄/跳过小文件缩小处理范围；");
+                println!("              全盘刷新模式 (-f) 需另挂一块与目标盘不同的备份盘。");
+                println!("{}", eq);
+                logger().log(
+                    &format!(
+                        "容量预检未通过：待处理 {} > 可用 {}，中止智能模式",
+                        need, free
+                    ),
+                    "WARNING",
+                );
+                crate::platform::exit_background_io_mode();
+                return 2;
+            }
+            logger().log(
+                &format!(
+                    "容量预检通过：待处理 {} <= 可用 {}",
+                    need, free
+                ),
+                "INFO",
+            );
+        }
 
         // 通知用户扫描结果，准备开始处理
         println!(

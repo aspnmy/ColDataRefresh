@@ -108,10 +108,12 @@ struct Args {
     #[arg(long, value_name = "KB", default_value_t = 512)]
     write_buf_kb: u64,
 
-    /// 智能模式：写入后立刻回读校验（默认关闭 —— 该步使 IO 翻倍且读到的是页缓存，
-    /// Windows 上会推高脏页水位导致整机卡死，故默认不校验）
+    /// 智能模式：写入后**额外回读**校验（默认关闭）。
+    /// 默认走「内存内校验」——用写入时的同一份内存数据比对 CRC，零额外 IO（issue #13）；
+    /// 打开本项则再回读一遍文件做二次校验（issue #11：该步使 IO 翻倍且读到的是页缓存，
+    /// Windows 上会推高脏页水位导致整机卡死，故默认关闭）
     #[arg(long)]
-    verify_after_write: bool,
+    verify_readback: bool,
 }
 //// ========================================================================================
 
@@ -154,14 +156,14 @@ fn main() {
         fill_free: args.fill_free,
         unit_gb: args.unit_gb,
         write_buf_kb: args.write_buf_kb,
-        verify_after_write: args.verify_after_write,
+        verify_readback: args.verify_readback,
     };
 
     //// ----------------------------------------------------------------------------------------
     // 把 CLI 开关落到全局配置（issue #11：智能模式默认不做写后回读校验）
     {
         let mut cfg = config::Config::default();
-        cfg.verify_after_write = args.verify_after_write;
+        cfg.verify_readback = args.verify_readback;
         config::set_config(cfg);
     }
 

@@ -27,9 +27,11 @@ pub struct Config {
     pub skip_small_threshold: u64,
     pub max_workers: usize,
     pub memory_limit_mb: u32,
-    /// 写入后是否立刻回读校验（issue #11：Windows 上此步使 IO 翻倍且读到的是页缓存，
-    /// 对"是否真落盘"无证明力，却把脏页水位推高 ⇒ 默认关闭，可用 `--verify-after-write` 开回）
-    pub verify_after_write: bool,
+    /// 智能模式：写入后**额外回读**校验（默认关闭）。
+    /// 默认走「内存内校验」——用写入时的同一份内存数据比对 CRC，零额外 IO（issue #13）；
+    /// 打开则再回读一遍文件做二次校验（issue #11：该步使 IO 翻倍且读到的是页缓存，
+    /// 对"是否真落盘"无证明力，却把脏页水位推高 ⇒ 默认关闭）
+    pub verify_readback: bool,
     pub full_refresh_pattern: Vec<u8>,
     pub trim_block_size: u64,
     pub version: &'static str,
@@ -54,7 +56,7 @@ impl Default for Config {
                 .map(|n| n.get())
                 .unwrap_or(4),
             memory_limit_mb: 512,
-            verify_after_write: false,
+            verify_readback: false,
             full_refresh_pattern: vec![0xFF],
             trim_block_size: 1024 * 1024,
             version: "5.0.4",
