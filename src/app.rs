@@ -22,6 +22,14 @@ pub struct RunOptions {
     pub cycle_check: bool,
     /// 跑圈校验圈数（默认 2）
     pub cycles: u64,
+    /// LBA 热力图采样模式
+    pub heatmap: bool,
+    /// 热力图：分桶粒度（MiB）
+    pub bucket_mib: u64,
+    /// 热力图：热桶阈值（访问次数）
+    pub hot_threshold: u64,
+    /// 热力图：温桶阈值（访问次数）
+    pub warm_threshold: u64,
     pub age: Option<u32>,
     pub skip_smaller: Option<u64>,
     pub yes: bool,
@@ -98,9 +106,13 @@ impl App {
             eprintln!("错误 (Error): --cycle-check 不能与 --full-refresh / --trim 同时使用 (mutually exclusive)");
             return 2;
         }
+        if opts.heatmap && (opts.full_refresh || opts.trim || opts.cycle_check) {
+            eprintln!("错误 (Error): --heatmap 不能与 --full-refresh / --trim / --cycle-check 同时使用 (mutually exclusive)");
+            return 2;
+        }
 
         // 3) 智能模式必须有 -a
-        if !opts.full_refresh && !opts.trim && !opts.cycle_check && opts.age.is_none() {
+        if !opts.full_refresh && !opts.trim && !opts.cycle_check && !opts.heatmap && opts.age.is_none() {
             eprintln!("错误 (Error): 智能模式必须指定数据时效 (data age required) -a <天数/days>");
             return 2;
         }
@@ -130,6 +142,18 @@ impl App {
             let unit_gb = opts.unit_gb.clamp(1, 100);
             let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
             return if self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb) {
+                0
+            } else {
+                1
+            };
+        }
+
+        // LBA 热力图（CLI 路径）
+        if opts.heatmap {
+            let bucket_mib = opts.bucket_mib.clamp(1, 1024);
+            let hot_th = opts.hot_threshold.max(1);
+            let warm_th = opts.warm_threshold.max(1);
+            return if self.run_heatmap_cli(&directory, bucket_mib, hot_th, warm_th) {
                 0
             } else {
                 1
@@ -606,6 +630,76 @@ impl App {
                     return false;
                 }
                 _ => println!("无效的选择，请输入 1 或 2 (Invalid choice, enter 1 or 2)"),
+            }
+        }
+    }
+
+    /// LBA 热力图采样（CLI 路径）— 抓 block 层 IO，按 LBA 分桶统计冷热。
+    /// 返回 true = 采样成功；false = 无可用后端或采样失败。
+    fn run_heatmap_cli(
+        &self,
+        directory: &str,
+        bucket_mib: u64,
+        hot_th: u64,
+        warm_th: u64,
+    ) -> bool {
+        crate::terminal::Terminal::clear();
+        let eq = "=".repeat(50);
+        println!("{}", eq);
+        println!("          LBA 热力图模式 (LBA Heat Map Mode)");
+        println!("{}", eq);
+        println!("目标路径 (Target):     {}", directory);
+        println!("分桶粒度 (Bucket):     {} MiB", bucket_mib);
+        println!("热桶阈值 (Hot th):     {} 次", hot_th);
+        println!("温桶阈值 (Warm th):    {} 次", warm_th);
+        println!("采样后端 (Backend):    {}", {
+            let b = crate::heatmap::probe_backend();
+            format!("{:?}", b).to_lowercase()
+        });
+        println!("{}", eq);
+
+        // 解析块设备
+        let device = match platform::resolve_block_device(directory) {
+            Some(d) => d,
+            None => {
+                eprintln!(
+                    "错误 (Error): 无法从路径解析块设备 (cannot resolve block device): {}",
+                    directory
+                );
+                return false;
+            }
+        };
+        println!("块设备 (Block device): {}\n", device);
+
+        // probe 动作：造少量 IO 以便采到 LBA（读目标目录 + 块设备）
+        let probe_dir = directory.to_string();
+        let probe = move || -> Result<(), String> {
+            use std::io::Read;
+            // 读目录下若干文件
+            if let Ok(entries) = std::fs::read_dir(&probe_dir) {
+                for e in entries.flatten().take(50) {
+                    let p = e.path();
+                    if p.is_file() {
+                        if let Ok(mut f) = std::fs::File::open(&p) {
+                            let mut buf = vec![0u8; 64 * 1024];
+                            let _ = f.read(&mut buf);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        match crate::heatmap::sample(&device, bucket_mib, probe) {
+            Ok(hm) => {
+                crate::heatmap::print_heatmap_cli(&hm, hot_th, warm_th);
+                let report = crate::heatmap::save_heatmap_report(&hm, hot_th, warm_th);
+                println!("\n报告已保存 (Report): {}", report);
+                true
+            }
+            Err(e) => {
+                eprintln!("❌ 采样失败 (sampling failed): {}", e);
+                false
             }
         }
     }

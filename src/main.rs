@@ -14,6 +14,7 @@ mod cycle_check;
 mod dashboard;
 mod file_op;
 mod full_refresh;
+mod heatmap;
 mod log;
 mod platform;
 mod terminal;
@@ -57,6 +58,22 @@ struct Args {
     /// 跑圈校验：圈数（写入 → 校验 → 报告 → 删除 → TRIM 为一圈）
     #[arg(long, value_name = "N", default_value_t = 2)]
     cycles: u64,
+
+    /// 是否执行 LBA 热力图采样（抓 block 层 IO，按 LBA 分桶统计冷热）
+    #[arg(short = 'H', long)]
+    heatmap: bool,
+
+    /// 热力图：分桶粒度（MiB，1-1024）
+    #[arg(long, value_name = "MiB", default_value_t = 64)]
+    bucket_mib: u64,
+
+    /// 热力图：热桶阈值（访问次数，>= 判为 hot）
+    #[arg(long, value_name = "N", default_value_t = 100)]
+    hot_threshold: u64,
+
+    /// 热力图：温桶阈值（访问次数，>= 判为 warm，其余为 cold）
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    warm_threshold: u64,
 
     /// 是否启用详细日志
     #[arg(short = 'v', long)]
@@ -118,6 +135,10 @@ fn main() {
         trim: args.trim,
         cycle_check: args.cycle_check,
         cycles: args.cycles,
+        heatmap: args.heatmap,
+        bucket_mib: args.bucket_mib,
+        hot_threshold: args.hot_threshold,
+        warm_threshold: args.warm_threshold,
         age: args.age,
         skip_smaller: args.skip_smaller,
         yes: args.yes,

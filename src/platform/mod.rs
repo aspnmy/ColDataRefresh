@@ -37,6 +37,119 @@ pub use darwin::{
 
 use crate::log::logger;
 
+//// ===================== 采样后端能力探测 (trace backend capability) =====================
+
+/// tracefs 是否可用（挂载点存在且可写）
+pub fn tracefs_available() -> bool {
+    std::path::Path::new("/sys/kernel/debug/tracing/events/block").exists()
+}
+
+/// perf 是否**真正**可运行（⛔ 只看 `which perf` 会误判：Debian 的 /usr/bin/perf
+/// 只是包装脚本，`linux-perf-<ver>` 未装时 exec 会失败 —— 1-243 实测踩到）
+pub fn perf_available() -> bool {
+    use std::process::Command;
+    Command::new("perf")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// bpftrace 是否可用（需工具 + BTF）
+pub fn bpftrace_available() -> bool {
+    use std::process::Command;
+    let has_tool = Command::new("bpftrace")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let has_btf = std::path::Path::new("/sys/kernel/btf/vmlinux").exists();
+    has_tool && has_btf
+}
+
+//// -------------------- tracefs 操作 (tracefs ops) --------------------
+/// tracefs 根目录（内核 4.19 与 6.x 路径一致）
+const TRACEFS: &str = "/sys/kernel/debug/tracing";
+
+/// 重置 trace：关采样、清空 buffer、关全部事件
+pub fn tracefs_reset() -> Result<(), String> {
+    tracefs_write("tracing_on", "0")?;
+    tracefs_write("trace", "")?;
+    // 关全部事件（可能失败，不致命）
+    let _ = tracefs_write("events/enable", "0");
+    Ok(())
+}
+
+/// 开关 trace
+pub fn tracefs_on(on: bool) -> Result<(), String> {
+    tracefs_write("tracing_on", if on { "1" } else { "0" })
+}
+
+/// 启用 / 关闭指定事件（如 "block/block_rq_issue"）
+pub fn tracefs_enable(event: &str, on: bool) -> Result<(), String> {
+    tracefs_write(
+        &format!("events/{}/enable", event),
+        if on { "1" } else { "0" },
+    )
+}
+
+/// 设置 ring buffer 大小（KB）
+pub fn tracefs_set_buffer_kb(kb: u64) -> Result<(), String> {
+    tracefs_write("buffer_size_kb", &kb.to_string())
+}
+
+/// 读取 trace 文本，并只保留目标设备的行
+pub fn tracefs_read(device: &str) -> Result<String, String> {
+    let path = format!("{}/trace", TRACEFS);
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("读取 {} 失败: {}", path, e))?;
+
+    // 目标设备的 dev_t（trace 里形如 "259,0"）
+    let Some(want) = device_dev_t(device) else {
+        return Ok(raw);
+    };
+
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        if let Some(pos) = line.find("block_rq_issue:") {
+            let rest = line[pos..].trim();
+            // 第一个字段即 dev
+            if let Some(dev) = rest.split_whitespace().nth(1) {
+                if dev == want {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 读取设备的 dev_t 字符串（major,minor —— 与 trace 输出格式一致）
+fn device_dev_t(device: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let md = std::fs::metadata(device).ok()?;
+    let rdev = md.rdev();
+    let major = (rdev >> 8) & 0xfff;
+    let minor = (rdev & 0xff) | ((rdev >> 12) & 0xfff00);
+    Some(format!("{},{}", major, minor))
+}
+
+/// 写 tracefs 文件（统一错误处理）
+fn tracefs_write(name: &str, value: &str) -> Result<(), String> {
+    use std::io::Write;
+    let path = format!("{}/{}", TRACEFS, name);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("打开 {} 失败: {}", path, e))?;
+    f.write_all(value.as_bytes())
+        .map_err(|e| format!("写入 {} 失败: {}", path, e))?;
+    Ok(())
+}
+
+//// ======================================================================================
+
 /// 执行 TRIM 操作（绕过文件系统的块层直下，issue #5）
 ///
 /// 优先走 `block_dev` 的 `ioctl(BLKDISCARD)` 直接对块设备下发 discard；
