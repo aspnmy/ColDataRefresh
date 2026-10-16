@@ -151,3 +151,223 @@ fn decode_mount_point(encoded: &str) -> String {
     }
     result
 }
+
+//// ===================== 块设备底层实现 (block device low-level) =====================
+// 以下为「块设备直写 / 直读 / 直 TRIM」的 Linux 专有实现（issue #7：平台代码只进分册）。
+// 抽象层与对外类型在 `block_dev.rs`；本文件只保留落到内核的那一层。
+
+/// 设备几何探测：逻辑扇区 / 物理扇区 / 容量（sysfs）
+pub fn block_geometry(device_path: &str) -> Result<(u64, u64, u64), String> {
+    let name = Path::new(device_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .ok_or_else(|| format!("无法解析设备名 (cannot parse device name): {}", device_path))?;
+
+    let base = format!("/sys/block/{}", name);
+    let logical = read_sysfs_u64(&format!("{}/queue/logical_block_size", base)).unwrap_or(512);
+    let physical =
+        read_sysfs_u64(&format!("{}/queue/physical_block_size", base)).unwrap_or(logical);
+    // 容量：sysfs 的 size 单位是 512B 扇区数
+    let sectors = read_sysfs_u64(&format!("{}/size", base)).unwrap_or(0);
+    let capacity = sectors * 512;
+
+    if capacity == 0 {
+        return Err(format!(
+            "无法读取设备容量 (cannot read capacity): {}",
+            device_path
+        ));
+    }
+
+    Ok((logical, physical.max(logical), capacity))
+}
+
+fn read_sysfs_u64(path: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+/// 安全闸门：拒绝承载系统路径（/ /boot /boot/efi /usr /var /etc）的设备及分区
+pub fn block_safety_gate(device_path: &str) -> Result<(bool, Option<String>), String> {
+    let name = Path::new(device_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    for line in mounts.lines() {
+        let mut it = line.split_whitespace();
+        let src = it.next().unwrap_or("");
+        let target = it.next().unwrap_or("");
+        if src.is_empty() {
+            continue;
+        }
+        if src.contains(&name) {
+            for critical in ["/", "/boot", "/boot/efi", "/usr", "/var", "/etc"] {
+                if target == critical {
+                    return Ok((
+                        false,
+                        Some(format!(
+                            "设备 {} 承载系统路径 {} ，禁止写入 (carries system path)",
+                            src, target
+                        )),
+                    ));
+                }
+            }
+        }
+    }
+
+    // 若目标是分区（而非整盘），检查其所属整盘是否承载系统
+    let part_file = format!("/sys/class/block/{}/partition", name);
+    if Path::new(&part_file).exists() {
+        if let Some(parent) = parent_disk(&name) {
+            let disk_on_system = mounts.lines().any(|l| {
+                let mut it = l.split_whitespace();
+                let src = it.next().unwrap_or("");
+                let target = it.next().unwrap_or("");
+                src.contains(&parent) && ["/", "/boot", "/boot/efi"].contains(&target)
+            });
+            if disk_on_system {
+                return Ok((
+                    false,
+                    Some(format!(
+                        "分区 {} 所属整盘 {} 承载系统路径，禁止写入",
+                        name, parent
+                    )),
+                ));
+            }
+        }
+    }
+
+    Ok((true, None))
+}
+
+/// 从分区名推出所属整盘名（nvme0n1p1 → nvme0n1；sda1 → sda）
+fn parent_disk(name: &str) -> Option<String> {
+    if name.starts_with("nvme") || name.starts_with("mmcblk") {
+        if let Some(idx) = name.rfind('p') {
+            let (disk, part) = name.split_at(idx);
+            if part.len() > 1 && part[1..].chars().all(|c| c.is_ascii_digit()) {
+                return Some(disk.to_string());
+            }
+        }
+        None
+    } else {
+        let trimmed = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        if trimmed != name && !trimmed.is_empty() {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    }
+}
+
+/// 直写：`O_DIRECT` + `pwrite`（绕过页缓存），写后 `fsync` 确认落盘
+pub fn block_direct_write(
+    device: &str,
+    offset: u64,
+    buf: &crate::block_dev::AlignedBuf,
+    len: u64,
+) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(device)
+        .map_err(|e| format!("O_DIRECT 打开设备失败 {}: {}", device, e))?;
+
+    // SAFETY: 传入已对齐缓冲区指针，长度与偏移均已按扇区对齐
+    let rc = unsafe {
+        libc::pwrite(
+            file.as_raw_fd(),
+            buf.as_slice().as_ptr() as *const libc::c_void,
+            len as usize,
+            offset as libc::off_t,
+        )
+    };
+    if rc < 0 {
+        return Err(format!(
+            "直写失败 (direct write failed) @{}: {}",
+            offset,
+            std::io::Error::last_os_error()
+        ));
+    }
+    if rc as u64 != len {
+        return Err(format!(
+            "直写不完整 (short write) @{}: {}/{}",
+            offset, rc, len
+        ));
+    }
+    unsafe { libc::fsync(file.as_raw_fd()) };
+    Ok(())
+}
+
+/// 直读：`O_DIRECT` + `pread`（绕过页缓存）
+pub fn block_direct_read(
+    device: &str,
+    offset: u64,
+    buf: &mut crate::block_dev::AlignedBuf,
+    len: u64,
+) -> Result<(), String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(device)
+        .map_err(|e| format!("O_DIRECT 打开设备失败 {}: {}", device, e))?;
+
+    // SAFETY: 读入已对齐缓冲区
+    let rc = unsafe {
+        libc::pread(
+            file.as_raw_fd(),
+            buf.as_mut_slice().as_mut_ptr() as *mut libc::c_void,
+            len as usize,
+            offset as libc::off_t,
+        )
+    };
+    if rc < 0 {
+        return Err(format!(
+            "直读失败 (direct read failed) @{}: {}",
+            offset,
+            std::io::Error::last_os_error()
+        ));
+    }
+    if rc as u64 != len {
+        return Err(format!(
+            "直读不完整 (short read) @{}: {}/{}",
+            offset, rc, len
+        ));
+    }
+    Ok(())
+}
+
+/// 直 TRIM：`ioctl(BLKDISCARD)` 直接对块设备下发 discard（绕过文件系统）
+pub fn block_direct_discard(device: &str, offset: u64, len: u64) -> Result<(), String> {
+    use std::os::unix::io::AsRawFd;
+
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(device)
+        .map_err(|e| format!("打开设备失败 (open failed) {}: {}", device, e))?;
+
+    // BLKDISCARD 的 ioctl 请求码（linux/fs.h）
+    const BLKDISCARD: libc::c_ulong = 0x1277;
+    let range: [u64; 2] = [offset, len];
+
+    // SAFETY: 传 [起始偏移, 长度]，两者均已按扇区对齐
+    let rc = unsafe { libc::ioctl(file.as_raw_fd(), BLKDISCARD, range.as_ptr()) };
+    if rc < 0 {
+        return Err(format!(
+            "BLKDISCARD 失败 (discard ioctl failed) @{}+{}: {}",
+            offset,
+            len,
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}

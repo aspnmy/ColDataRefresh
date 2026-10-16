@@ -210,261 +210,35 @@ pub fn probe_device(device_path: &str) -> Result<DeviceInfo, String> {
 }
 
 /// 读取设备几何信息：逻辑扇区 / 物理扇区 / 容量
-#[cfg(target_os = "linux")]
+///
+/// 平台专有实现见 `platform/{linux,windows,darwin}.rs`（issue #7：平台代码只进对应分册）。
 fn read_device_geometry(device_path: &str) -> Result<(u64, u64, u64), String> {
-    // 从 /dev/nvme0n1 推出 sysfs 名字
-    let name = Path::new(device_path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .ok_or_else(|| format!("无法解析设备名 (cannot parse device name): {}", device_path))?;
-
-    let base = format!("/sys/block/{}", name);
-    let logical = read_sysfs_u64(&format!("{}/queue/logical_block_size", base)).unwrap_or(512);
-    let physical = read_sysfs_u64(&format!("{}/queue/physical_block_size", base))
-        .unwrap_or(logical);
-    // 容量：sysfs 的 size 单位是 512B 扇区数
-    let sectors = read_sysfs_u64(&format!("{}/size", base)).unwrap_or(0);
-    let capacity = sectors * 512;
-
-    if capacity == 0 {
-        return Err(format!(
-            "无法读取设备容量 (cannot read capacity): {}",
-            device_path
-        ));
-    }
-
-    Ok((logical, physical.max(logical), capacity))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_device_geometry(_device_path: &str) -> Result<(u64, u64, u64), String> {
-    // Windows / 其他平台：暂用保守默认值（物理扇区 4096）
-    Err("当前平台尚未实现设备几何探测 (geometry probe not implemented on this platform)".to_string())
-}
-
-#[cfg(target_os = "linux")]
-fn read_sysfs_u64(path: &str) -> Option<u64> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
+    crate::platform::block_geometry(device_path)
 }
 
 //// -------------------- 安全闸门 (safety gate) --------------------
 /// ⛔ 只允许显式指定的目标盘；拒绝系统盘 / ESP / MSR / 恢复分区。
-#[cfg(target_os = "linux")]
+///
+/// 平台专有实现见 `platform/{linux,windows,darwin}.rs`。
 fn safety_gate(device_path: &str) -> Result<(bool, Option<String>), String> {
-    let name = Path::new(device_path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    // 读取当前挂载点，判断是否承载系统关键路径
-    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
-    for line in mounts.lines() {
-        let mut it = line.split_whitespace();
-        let src = it.next().unwrap_or("");
-        let target = it.next().unwrap_or("");
-        if src.is_empty() {
-            continue;
-        }
-        // 该设备（或其分区）挂载在系统关键路径 ⇒ 拒绝
-        if src.contains(&name) {
-            for critical in ["/", "/boot", "/boot/efi", "/usr", "/var", "/etc"] {
-                if target == critical {
-                    return Ok((
-                        false,
-                        Some(format!(
-                            "设备 {} 承载系统路径 {} ，禁止写入 (carries system path)",
-                            src, target
-                        )),
-                    ));
-                }
-            }
-        }
-    }
-
-    // 拒绝分区表类型为 ESP / MSR / 恢复分区的分区
-    let part_type_file = format!("/sys/class/block/{}/partition", name);
-    if Path::new(&part_type_file).exists() {
-        // 若目标是分区（而非整盘），检查其是否属于系统盘
-        if let Some(parent) = parent_disk(&name) {
-            let disk_mounted_system = mounts.lines().any(|l| {
-                let mut it = l.split_whitespace();
-                let src = it.next().unwrap_or("");
-                let target = it.next().unwrap_or("");
-                src.contains(&parent) && ["/", "/boot", "/boot/efi"].contains(&target)
-            });
-            if disk_mounted_system {
-                return Ok((
-                    false,
-                    Some(format!(
-                        "分区 {} 所属整盘 {} 承载系统路径，禁止写入",
-                        name, parent
-                    )),
-                ));
-            }
-        }
-    }
-
-    Ok((true, None))
-}
-
-#[cfg(not(target_os = "linux"))]
-fn safety_gate(_device_path: &str) -> Result<(bool, Option<String>), String> {
-    // 非 Linux 平台：保守放行，由调用方显式确认（Windows 侧待实现 PhysicalDrive 校验）
-    Ok((true, None))
-}
-
-/// 从分区名推出所属整盘名（nvme0n1p1 → nvme0n1；sda1 → sda）
-#[cfg(target_os = "linux")]
-fn parent_disk(name: &str) -> Option<String> {
-    if name.starts_with("nvme") || name.starts_with("mmcblk") {
-        // nvme0n1p1 → nvme0n1 ; mmcblk0p1 → mmcblk0
-        if let Some(idx) = name.rfind('p') {
-            let (disk, part) = name.split_at(idx);
-            if part.len() > 1 && part[1..].chars().all(|c| c.is_ascii_digit()) {
-                return Some(disk.to_string());
-            }
-        }
-        None
-    } else {
-        // sda1 → sda ; vdb2 → vdb
-        let trimmed: String = name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
-        if trimmed != name && !trimmed.is_empty() {
-            Some(trimmed)
-        } else {
-            None
-        }
-    }
+    crate::platform::block_safety_gate(device_path)
 }
 
 //// ===================== 底层 I/O 实现 (low-level I/O) =====================
 
-/// Linux：O_DIRECT 直写
-#[cfg(target_os = "linux")]
+/// 直写 —— 平台专有实现派发（Linux `O_DIRECT`+`pwrite`；其他平台见各自分册）
 fn direct_write(device: &str, offset: u64, buf: &AlignedBuf, len: u64) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(device)
-        .map_err(|e| format!("O_DIRECT 打开设备失败 {}: {}", device, e))?;
-
-    // SAFETY: 使用 libc pwrite 保证对齐直写
-    let rc = unsafe {
-        libc::pwrite(
-            file.as_raw_fd(),
-            buf.as_slice().as_ptr() as *const libc::c_void,
-            len as usize,
-            offset as libc::off_t,
-        )
-    };
-    if rc < 0 {
-        return Err(format!(
-            "直写失败 (direct write failed) @{}: {}",
-            offset,
-            std::io::Error::last_os_error()
-        ));
-    }
-    if rc as u64 != len {
-        return Err(format!(
-            "直写不完整 (short write) @{}: {}/{}",
-            offset, rc, len
-        ));
-    }
-    // 确认落盘后关闭（file 在作用域结束时自动 drop）
-    unsafe { libc::fsync(file.as_raw_fd()) };
-    Ok(())
+    crate::platform::block_direct_write(device, offset, buf, len)
 }
 
-/// Linux：O_DIRECT 直读
-#[cfg(target_os = "linux")]
+/// 直读 —— 平台专有实现派发
 fn direct_read(device: &str, offset: u64, buf: &mut AlignedBuf, len: u64) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::io::AsRawFd;
-
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(device)
-        .map_err(|e| format!("O_DIRECT 打开设备失败 {}: {}", device, e))?;
-
-    // SAFETY: pread 读入已对齐缓冲区
-    let rc = unsafe {
-        libc::pread(
-            file.as_raw_fd(),
-            buf.as_mut_slice().as_mut_ptr() as *mut libc::c_void,
-            len as usize,
-            offset as libc::off_t,
-        )
-    };
-    if rc < 0 {
-        return Err(format!(
-            "直读失败 (direct read failed) @{}: {}",
-            offset,
-            std::io::Error::last_os_error()
-        ));
-    }
-    if rc as u64 != len {
-        return Err(format!(
-            "直读不完整 (short read) @{}: {}/{}",
-            offset, rc, len
-        ));
-    }
-    Ok(())
+    crate::platform::block_direct_read(device, offset, buf, len)
 }
 
-/// Linux：ioctl(BLKDISCARD) 直接下发 TRIM（绕过文件系统）
-#[cfg(target_os = "linux")]
+/// 直 TRIM —— 平台专有实现派发（Linux `ioctl(BLKDISCARD)`）
 fn direct_discard(device: &str, offset: u64, len: u64) -> Result<(), String> {
-    use std::os::unix::io::AsRawFd;
-
-    // 打开设备（discard 不需要 O_DIRECT，但需要写权限）
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(device)
-        .map_err(|e| format!("打开设备失败 (open failed) {}: {}", device, e))?;
-
-    // BLKDISCARD 的 ioctl 请求码（linux/fs.h）
-    const BLKDISCARD: libc::c_ulong = 0x1277;
-    let range: [u64; 2] = [offset, len];
-
-    // SAFETY: 传 [起始, 长度] 到 BLKDISCARD
-    let rc = unsafe {
-        libc::ioctl(
-            file.as_raw_fd(),
-            BLKDISCARD as libc::c_ulong,
-            range.as_ptr(),
-        )
-    };
-    if rc < 0 {
-        return Err(format!(
-            "BLKDISCARD 失败 (discard ioctl failed) @{}+{}: {}",
-            offset,
-            len,
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(())
-}
-
-/// 非 Linux：直写未实现（Windows 侧待 FILE_FLAG_NO_BUFFERING 实现）
-#[cfg(not(target_os = "linux"))]
-fn direct_write(_device: &str, _offset: u64, _buf: &AlignedBuf, _len: u64) -> Result<(), String> {
-    Err("当前平台尚未实现直写 (direct write not implemented on this platform)".to_string())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn direct_read(_device: &str, _offset: u64, _buf: &mut AlignedBuf, _len: u64) -> Result<(), String> {
-    Err("当前平台尚未实现直读 (direct read not implemented on this platform)".to_string())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn direct_discard(_device: &str, _offset: u64, _len: u64) -> Result<(), String> {
-    Err("当前平台尚未实现直 TRIM (direct discard not implemented on this platform)".to_string())
+    crate::platform::block_direct_discard(device, offset, len)
 }
 
 //// ===================== 直写刷写后端 (direct-write refresh backend) =====================

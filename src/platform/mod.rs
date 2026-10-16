@@ -23,16 +23,31 @@ pub use linux::{
     resolve_device_name, trim_volume,
 };
 
+#[cfg(target_os = "linux")]
+pub use linux::{
+    block_direct_discard, block_direct_read, block_direct_write, block_geometry, block_safety_gate,
+};
+
 #[cfg(target_os = "windows")]
 pub use windows::{
     get_disk_space, get_os_display, is_admin, is_root_path, resolve_block_device,
     resolve_device_name, trim_volume,
 };
 
+#[cfg(target_os = "windows")]
+pub use windows::{
+    block_direct_discard, block_direct_read, block_direct_write, block_geometry, block_safety_gate,
+};
+
 #[cfg(target_os = "macos")]
 pub use darwin::{
     get_disk_space, get_os_display, is_admin, is_root_path, resolve_block_device,
     resolve_device_name, trim_volume,
+};
+
+#[cfg(target_os = "macos")]
+pub use darwin::{
+    block_direct_discard, block_direct_read, block_direct_write, block_geometry, block_safety_gate,
 };
 
 use crate::log::logger;

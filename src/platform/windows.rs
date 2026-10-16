@@ -192,3 +192,60 @@ pub fn get_os_display() -> String {
 pub fn resolve_block_device(_path: &str) -> Option<String> {
     None
 }
+
+//// ===================== 块设备底层实现 (block device low-level) =====================
+// Windows 侧尚未实现（issue #4 待补）。以下函数返回明确错误，⛔ 不静默降级。
+// 抽象层与对外类型在 `block_dev.rs`；本文件只放落到平台 API 的那一层。
+
+/// 设备几何探测 —— 待用 `IOCTL_STORAGE_QUERY_PROPERTY` 实现
+pub fn block_geometry(device_path: &str) -> Result<(u64, u64, u64), String> {
+    Err(format!(
+        "Windows 侧设备几何探测尚未实现 (geometry probe not implemented): {}",
+        device_path
+    ))
+}
+
+/// 安全闸门 —— 待实现 PhysicalDrive 系统盘校验；当前一律拒绝（保守）
+pub fn block_safety_gate(device_path: &str) -> Result<(bool, Option<String>), String> {
+    Ok((
+        false,
+        Some(format!(
+            "Windows 侧安全闸门尚未实现 (safety gate not implemented)，保守拒绝: {}",
+            device_path
+        )),
+    ))
+}
+
+/// 直写 —— 待用 `FILE_FLAG_NO_BUFFERING` + `WriteFile` 实现
+pub fn block_direct_write(
+    device: &str,
+    _offset: u64,
+    _buf: &crate::block_dev::AlignedBuf,
+    _len: u64,
+) -> Result<(), String> {
+    Err(format!(
+        "Windows 侧块设备直写尚未实现 (direct write not implemented): {}",
+        device
+    ))
+}
+
+/// 直读 —— 待实现
+pub fn block_direct_read(
+    device: &str,
+    _offset: u64,
+    _buf: &mut crate::block_dev::AlignedBuf,
+    _len: u64,
+) -> Result<(), String> {
+    Err(format!(
+        "Windows 侧块设备直读尚未实现 (direct read not implemented): {}",
+        device
+    ))
+}
+
+/// 直 TRIM —— 待用 `DeviceIoControl` 实现
+pub fn block_direct_discard(device: &str, _offset: u64, _len: u64) -> Result<(), String> {
+    Err(format!(
+        "Windows 侧直 TRIM 尚未实现 (direct discard not implemented): {}",
+        device
+    ))
+}

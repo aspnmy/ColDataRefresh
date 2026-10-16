@@ -128,3 +128,60 @@ pub fn get_os_display() -> String {
 pub fn resolve_block_device(_path: &str) -> Option<String> {
     None
 }
+
+//// ===================== 块设备底层实现 (block device low-level) =====================
+// macOS 侧**平台不支持**裸盘直写（非"尚未实现"）—— 内核对整盘设备不提供用户态写通道，
+// 无 `O_DIRECT` / `FILE_FLAG_NO_BUFFERING` 的对应手段。以下函数返回明确错误说明成因。
+
+/// 设备几何探测 —— 可用 `diskutil info -plist` 实现，但无直写通道故暂不接
+pub fn block_geometry(device_path: &str) -> Result<(u64, u64, u64), String> {
+    Err(format!(
+        "macOS 侧块设备几何探测未接入 (geometry probe not wired): {}",
+        device_path
+    ))
+}
+
+/// 安全闸门 —— 无直写通道，保守拒绝
+pub fn block_safety_gate(device_path: &str) -> Result<(bool, Option<String>), String> {
+    Ok((
+        false,
+        Some(format!(
+            "macOS 内核不允许用户态裸盘直写 (kernel forbids raw-device write): {}",
+            device_path
+        )),
+    ))
+}
+
+/// 直写 —— 平台不支持
+pub fn block_direct_write(
+    device: &str,
+    _offset: u64,
+    _buf: &crate::block_dev::AlignedBuf,
+    _len: u64,
+) -> Result<(), String> {
+    Err(format!(
+        "macOS 内核不允许用户态裸盘直写 (kernel forbids raw-device write): {}",
+        device
+    ))
+}
+
+/// 直读 —— 平台不支持（可改用 F_NOCACHE 绕页缓存，但无裸盘通道）
+pub fn block_direct_read(
+    device: &str,
+    _offset: u64,
+    _buf: &mut crate::block_dev::AlignedBuf,
+    _len: u64,
+) -> Result<(), String> {
+    Err(format!(
+        "macOS 内核不允许用户态裸盘直读 (kernel forbids raw-device read): {}",
+        device
+    ))
+}
+
+/// 直 TRIM —— 无 `ioctl(BLKDISCARD)` 等价物（`DKIOCUNMAP` 对 APFS 容器基本无效）
+pub fn block_direct_discard(device: &str, _offset: u64, _len: u64) -> Result<(), String> {
+    Err(format!(
+        "macOS 无块层 discard 等价物 (no BLKDISCARD equivalent): {}",
+        device
+    ))
+}
