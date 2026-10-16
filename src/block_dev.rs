@@ -169,7 +169,8 @@ impl AlignedBuf {
         })
     }
 
-    /// 对齐后的起始指针
+    /// 对齐后的起始指针 —— 供 Linux 直写直读使用（其他平台无块设备实现）
+    #[cfg(target_os = "linux")]
     fn as_ptr(&self) -> *const u8 {
         // SAFETY: offset < buf.len()（构造时保证 offset <= align < total）
         unsafe { self.buf.as_ptr().add(self.offset) }
@@ -188,7 +189,8 @@ impl AlignedBuf {
         unsafe { std::slice::from_raw_parts_mut(self.buf.as_mut_ptr().add(off), n) }
     }
 
-    /// 以只读切片访问
+    /// 以只读切片访问 —— 供 Linux 直写使用
+    #[cfg(target_os = "linux")]
     pub fn as_slice(&self) -> &[u8] {
         let n = self.len as usize;
         // SAFETY: 同上，窗口落在 buf 容量之内

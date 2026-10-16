@@ -86,10 +86,14 @@ pub fn bpftrace_available() -> bool {
 }
 
 //// -------------------- tracefs 操作 (tracefs ops) --------------------
+// ⚠️ tracefs 是 Linux 专有（`/sys/kernel/debug/tracing` + unix dev_t）⇒ 整段须加平台守卫，
+// 否则 Windows/musl 目标编译时会执行到 `std::os::unix`（CI 实测 error[E0433]）。
 /// tracefs 根目录（内核 4.19 与 6.x 路径一致）
+#[cfg(target_os = "linux")]
 const TRACEFS: &str = "/sys/kernel/debug/tracing";
 
 /// 重置 trace：关采样、清空 buffer、关全部事件
+#[cfg(target_os = "linux")]
 pub fn tracefs_reset() -> Result<(), String> {
     tracefs_write("tracing_on", "0")?;
     tracefs_write("trace", "")?;
@@ -99,11 +103,13 @@ pub fn tracefs_reset() -> Result<(), String> {
 }
 
 /// 开关 trace
+#[cfg(target_os = "linux")]
 pub fn tracefs_on(on: bool) -> Result<(), String> {
     tracefs_write("tracing_on", if on { "1" } else { "0" })
 }
 
 /// 启用 / 关闭指定事件（如 "block/block_rq_issue"）
+#[cfg(target_os = "linux")]
 pub fn tracefs_enable(event: &str, on: bool) -> Result<(), String> {
     tracefs_write(
         &format!("events/{}/enable", event),
@@ -112,11 +118,13 @@ pub fn tracefs_enable(event: &str, on: bool) -> Result<(), String> {
 }
 
 /// 设置 ring buffer 大小（KB）
+#[cfg(target_os = "linux")]
 pub fn tracefs_set_buffer_kb(kb: u64) -> Result<(), String> {
     tracefs_write("buffer_size_kb", &kb.to_string())
 }
 
 /// 读取 trace 文本，并只保留目标设备的行
+#[cfg(target_os = "linux")]
 pub fn tracefs_read(device: &str) -> Result<String, String> {
     let path = format!("{}/trace", TRACEFS);
     let raw = std::fs::read_to_string(&path)
@@ -144,6 +152,7 @@ pub fn tracefs_read(device: &str) -> Result<String, String> {
 }
 
 /// 读取设备的 dev_t 字符串（major,minor —— 与 trace 输出格式一致）
+#[cfg(target_os = "linux")]
 fn device_dev_t(device: &str) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let md = std::fs::metadata(device).ok()?;
@@ -154,6 +163,7 @@ fn device_dev_t(device: &str) -> Option<String> {
 }
 
 /// 写 tracefs 文件（统一错误处理）
+#[cfg(target_os = "linux")]
 fn tracefs_write(name: &str, value: &str) -> Result<(), String> {
     use std::io::Write;
     let path = format!("{}/{}", TRACEFS, name);

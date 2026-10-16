@@ -198,42 +198,54 @@ where
     let device_sectors = device_capacity_sectors(device)?;
 
     // 1) 准备 tracefs：只开 block_rq_issue
-    crate::platform::tracefs_reset()?;
-    crate::platform::tracefs_enable("block/block_rq_issue", true)?;
-    crate::platform::tracefs_set_buffer_kb(2048)?;
+    // ⚠️ tracefs 是 Linux 专有 —— 非 Linux 平台走下方 else 分支直接返回"不支持"，
+    // 避免编译期引用不存在的符号（CI 实测 Windows 目标 error[E0425]）。
+    #[cfg(target_os = "linux")]
+    {
+        crate::platform::tracefs_reset()?;
+        crate::platform::tracefs_enable("block/block_rq_issue", true)?;
+        crate::platform::tracefs_set_buffer_kb(2048)?;
 
-    // 2) 开 trace → 跑 probe → 关 trace
-    crate::platform::tracefs_on(true)?;
-    let probe_result = probe();
-    crate::platform::tracefs_on(false)?;
-    crate::platform::tracefs_enable("block/block_rq_issue", false)?;
+        // 2) 开 trace → 跑 probe → 关 trace
+        crate::platform::tracefs_on(true)?;
+        let probe_result = probe();
+        crate::platform::tracefs_on(false)?;
+        crate::platform::tracefs_enable("block/block_rq_issue", false)?;
 
-    // 3) 取 trace 文本
-    let raw = crate::platform::tracefs_read(device)?;
+        // 3) 取 trace 文本
+        let raw = crate::platform::tracefs_read(device)?;
 
-    // 4) 解析
-    let (events, buckets) = parse_trace(&raw, bucket_sectors)?;
+        // 4) 解析
+        let (events, buckets) = parse_trace(&raw, bucket_sectors)?;
 
-    let mut hm = HeatMap {
-        backend: "tracefs".to_string(),
-        events,
-        bucket_sectors,
-        buckets,
-        device_sectors,
-    };
-    // 只保留目标设备的事件（parse_trace 已过滤）
-    hm.events = events;
+        let hm = HeatMap {
+            backend: "tracefs".to_string(),
+            events,
+            bucket_sectors,
+            buckets,
+            device_sectors,
+        };
 
-    logger().log(
-        &format!(
-            "LBA 热度采样完成: 后端={}, 事件={}, 桶数={}, 桶大小={} MiB",
-            hm.backend, hm.events, hm.buckets.len(), bucket_mib
-        ),
-        "INFO",
-    );
+        logger().log(
+            &format!(
+                "LBA 热度采样完成: 后端={}, 事件={}, 桶数={}, 桶大小={} MiB",
+                hm.backend,
+                hm.events,
+                hm.buckets.len(),
+                bucket_mib
+            ),
+            "INFO",
+        );
 
-    probe_result?;
-    Ok(hm)
+        probe_result?;
+        return Ok(hm);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (bucket_sectors, device_sectors, probe, bucket_mib);
+        Err("LBA 热度采样依赖 tracefs，当前平台不支持 (tracefs is Linux-only)".to_string())
+    }
 }
 
 /// 解析 trace 文本 —— 提取每笔 IO 的 LBA / 长度 / 读写方向，按桶聚合。
@@ -243,6 +255,7 @@ where
 ///               dd-39063 [005] ....  9693.847770: block_rq_issue: 259,0 R 262144 () 2048 + 512 [dd]
 /// ```
 /// 字段（按空白切分）：dev=$1 rw=$2 bytes=$3 ... sector=$5 +nr=$7 [comm]=$9
+#[cfg(target_os = "linux")]
 fn parse_trace(
     raw: &str,
     bucket_sectors: u64,
