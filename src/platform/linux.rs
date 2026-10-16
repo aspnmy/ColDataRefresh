@@ -355,7 +355,11 @@ pub fn block_direct_discard(device: &str, offset: u64, len: u64) -> Result<(), S
         .open(device)
         .map_err(|e| format!("打开设备失败 (open failed) {}: {}", device, e))?;
 
-    // BLKDISCARD 的 ioctl 请求码（linux/fs.h）
+    // BLKDISCARD 的 ioctl 请求码（linux/fs.h，值 `_IO(0x12,119)` = 0x1277）
+    // musl 目标的 `libc::ioctl` 第二参数是 `i32`，gnu 目标是 `c_ulong` ⇒ 按目标取型再传入
+    #[cfg(target_env = "musl")]
+    const BLKDISCARD: libc::c_int = 0x1277;
+    #[cfg(not(target_env = "musl"))]
     const BLKDISCARD: libc::c_ulong = 0x1277;
     let range: [u64; 2] = [offset, len];
 
