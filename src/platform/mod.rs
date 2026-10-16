@@ -38,8 +38,23 @@ pub use windows::{
 #[cfg(target_os = "windows")]
 pub use windows::{
     block_direct_discard, block_direct_read, block_direct_write, block_geometry, block_safety_gate,
-    clear_readonly, preserve_creation_time,
+    clear_readonly, enter_background_io_mode, exit_background_io_mode, preserve_creation_time,
 };
+
+/// 切入「后台 IO 模式」—— Windows 下降低本线程磁盘 IO 优先级防整机假死；
+/// 其它平台为无操作（Linux/macOS 用 ionice/cgroup 或本就无此问题，保持行为不变）。
+#[cfg(not(target_os = "windows"))]
+#[inline]
+pub fn enter_background_io_mode() -> bool {
+    true
+}
+
+/// 退出「后台 IO 模式」—— 非 Windows 平台为无操作。
+#[cfg(not(target_os = "windows"))]
+#[inline]
+pub fn exit_background_io_mode() -> bool {
+    true
+}
 
 #[cfg(target_os = "macos")]
 pub use darwin::{

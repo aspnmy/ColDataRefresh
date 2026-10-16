@@ -27,6 +27,9 @@ pub struct Config {
     pub skip_small_threshold: u64,
     pub max_workers: usize,
     pub memory_limit_mb: u32,
+    /// 写入后是否立刻回读校验（issue #11：Windows 上此步使 IO 翻倍且读到的是页缓存，
+    /// 对"是否真落盘"无证明力，却把脏页水位推高 ⇒ 默认关闭，可用 `--verify-after-write` 开回）
+    pub verify_after_write: bool,
     pub full_refresh_pattern: Vec<u8>,
     pub trim_block_size: u64,
     pub version: &'static str,
@@ -51,6 +54,7 @@ impl Default for Config {
                 .map(|n| n.get())
                 .unwrap_or(4),
             memory_limit_mb: 512,
+            verify_after_write: false,
             full_refresh_pattern: vec![0xFF],
             trim_block_size: 1024 * 1024,
             version: "5.0.4",
@@ -63,6 +67,11 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// 获取全局配置引用（线程安全）
 pub fn config() -> &'static Config {
     CONFIG.get_or_init(Config::default)
+}
+
+/// 注入运行时配置（进程启动时调用一次；已在别处初始化则忽略，保持首次值语义）
+pub fn set_config(cfg: Config) {
+    let _ = CONFIG.set(cfg);
 }
 
 /// 文件分类函数

@@ -41,6 +41,8 @@ pub struct RunOptions {
     pub fill_free: bool,
     pub unit_gb: u64,
     pub write_buf_kb: u64,
+    /// 智能模式：写入后是否立刻回读校验（issue #11，默认关闭）
+    pub verify_after_write: bool,
 }
 
 /// 应用控制器 — 交互菜单与模式路由
@@ -181,8 +183,8 @@ impl App {
 
         logger().log(
             &format!(
-                "[CLI] 目录='{}', 时效={}天, 跳过小文件={}, 缓冲区={}MB",
-                directory, min_days, skip_small, self.dashboard.buffer_size_mb
+                "[CLI] 目录='{}', 时效={}天, 跳过小文件={}, 缓冲区={}MB, 写后校验={}",
+                directory, min_days, skip_small, self.dashboard.buffer_size_mb, opts.verify_after_write
             ),
             "INFO",
         );
@@ -308,6 +310,13 @@ impl App {
     /// 智能模式主体 — 交互与 CLI 共用
     /// 返回 0 正常完成 / 1 存在失败项 / 3 未发现符合条件的文件
     fn run_smart_refresh(&mut self, directory: &str, min_days: u32, skip_small: bool) -> i32 {
+        // issue #11：Windows 上切入后台 IO 模式 —— 本线程磁盘 IO 被系统降级/延后，
+        // 前台响应优先 ⇒ 防「磁盘写入量高导致整机卡死」；非 Windows 平台为空操作。
+        let bg_io = crate::platform::enter_background_io_mode();
+        if bg_io {
+            logger().log("智能模式已启用后台 IO 模式 (background I/O mode)", "INFO");
+        }
+
         logger().log(
             &format!(
                 "用户配置: 目录='{}', 数据时效={}天, 跳过小文件={}, 缓冲区={}MB",
@@ -441,8 +450,10 @@ impl App {
         );
 
         if self.stats.corrupted > 0 {
+            crate::platform::exit_background_io_mode();
             1
         } else {
+            crate::platform::exit_background_io_mode();
             0
         }
     }

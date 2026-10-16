@@ -168,7 +168,9 @@ fn refresh_file_whole(
     let write_crc = crc32fast::hash(&data);
     let processed = file_len;
 
-    // 第二阶段：整片写回
+    // 第二/三阶段：整片写回 + 读回验证
+    // ⚠️ 验证策略按运行时开关决定（issue #11：Windows 上逐文件立刻回读使 IO 翻倍，
+    // 且读到的其实是刚写入的页缓存 ⇒ 对"是否真落盘"无证明力，却把脏页水位推高）。
     let mut file = fs::OpenOptions::new()
         .write(true)
         .open(p)
@@ -179,13 +181,14 @@ fn refresh_file_whole(
         .map_err(|e| format!("刷新文件失败: {}", e))?;
     drop(file);
 
-    // 第三阶段：整片读回验证
-    let verify_data = std::fs::read(p)
-        .map_err(|e| format!("读取文件验证失败: {}", e))?;
-    let verify_crc = crc32fast::hash(&verify_data);
+    if get_config().verify_after_write {
+        let verify_data = std::fs::read(p)
+            .map_err(|e| format!("读取文件验证失败: {}", e))?;
+        let verify_crc = crc32fast::hash(&verify_data);
 
-    if write_crc != verify_crc {
-        return Err("CRC 校验不匹配：文件可能损坏，建议从备份恢复".into());
+        if write_crc != verify_crc {
+            return Err("CRC 校验不匹配：文件可能损坏，建议从备份恢复".into());
+        }
     }
 
     let elapsed = start.elapsed().as_secs_f64();
@@ -240,24 +243,26 @@ fn refresh_file_chunked(
         hasher.finalize()
     };
 
-    // 第二阶段：分块读回验证
-    let verify_crc = {
-        let mut file = File::open(p)
-            .map_err(|e| format!("打开文件验证失败: {}", e))?;
-        let mut hasher = Hasher::new();
-        with_buffer(|buf| -> u32 {
-            loop {
-                match file.read(buf) {
-                    Ok(0) => break hasher.finalize(),
-                    Ok(n) => hasher.update(&buf[..n]),
-                    Err(_e) => return hasher.finalize(), // 忽略读取错误，继续尝试
+    // 第二阶段：分块读回验证（按运行时开关决定，见 refresh_file_whole 处的说明）
+    if get_config().verify_after_write {
+        let verify_crc = {
+            let mut file = File::open(p)
+                .map_err(|e| format!("打开文件验证失败: {}", e))?;
+            let mut hasher = Hasher::new();
+            with_buffer(|buf| -> u32 {
+                loop {
+                    match file.read(buf) {
+                        Ok(0) => break hasher.finalize(),
+                        Ok(n) => hasher.update(&buf[..n]),
+                        Err(_e) => return hasher.finalize(), // 忽略读取错误，继续尝试
+                    }
                 }
-            }
-        })
-    };
+            })
+        };
 
-    if write_crc != verify_crc {
-        return Err("CRC 校验不匹配：写入后数据不一致，文件可能损坏".into());
+        if write_crc != verify_crc {
+            return Err("CRC 校验不匹配：写入后数据不一致，文件可能损坏".into());
+        }
     }
 
     let elapsed = start.elapsed().as_secs_f64();

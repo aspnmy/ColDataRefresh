@@ -266,6 +266,40 @@ pub fn clear_readonly(path: &std::path::Path) {
     }
 }
 
+/// 把当前线程切到「后台模式」—— Windows 防整机假死的关键一招。
+///
+/// `THREAD_MODE_BACKGROUND_BEGIN`（0x0001_0000）会让本线程的磁盘 IO 在低于系统
+/// 阈值时被自动降级/延后 ⇒ **不加速，但整机不被抢死**（issue #11：磁盘写入量高
+/// 导致系统卡死，而内存并不高）。
+///
+/// 返回 true = 已切入后台模式；false = 调用失败（调用方按常规继续，不致命）。
+#[cfg(target_os = "windows")]
+pub fn enter_background_io_mode() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+    };
+    // SAFETY: GetCurrentThread 返回伪句柄，无需关闭；仅设置本线程优先级
+    let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) };
+    if ok == 0 {
+        logger().log("切入后台 IO 模式失败 (THREAD_MODE_BACKGROUND_BEGIN)", "WARNING");
+        false
+    } else {
+        logger().log("已切入后台 IO 模式，系统前台响应优先 (background I/O mode ON)", "INFO");
+        true
+    }
+}
+
+/// 退出「后台模式」，恢复常规 IO 优先级。
+#[cfg(target_os = "windows")]
+pub fn exit_background_io_mode() -> bool {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_END,
+    };
+    // SAFETY: 同上，仅恢复本线程优先级
+    let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END) };
+    ok != 0
+}
+
 /// 保留文件的创建时间 —— Windows 用 Win32 `SetFileTime`
 pub fn preserve_creation_time(path: &std::path::Path) {
     use std::os::windows::fs::MetadataExt;
