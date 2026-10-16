@@ -30,4 +30,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Console",
     "Win32_System_Threading",
     "Win32_Foundation",
+    # issue #12：Windows 侧 LBA 热度采样走 ETW（Microsoft-Windows-Kernel-Disk）
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_Diagnostics_Debug",
+    # OpenTraceW / EVENT_TRACE_LOGFILEW 被 windows-sys 门控在该特性下
+    "Win32_System_Time",
 ]}

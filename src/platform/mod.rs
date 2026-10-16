@@ -17,6 +17,10 @@ mod windows;
 #[cfg(target_os = "macos")]
 mod darwin;
 
+/// LBA 热度采样分册（issue #12）—— 各平台机制不同、**输出契约相同**：
+/// Linux = tracefs / Windows = ETW / macOS = 明确不支持并写清成因。
+pub mod heat_sample;
+
 #[cfg(target_os = "linux")]
 pub use linux::{
     get_disk_space, get_os_display, is_admin, is_root_path, resolve_block_device,
