@@ -154,7 +154,7 @@ impl App {
             let bucket_mib = opts.bucket_mib.clamp(1, 1024);
             let hot_th = opts.hot_threshold.max(1);
             let warm_th = opts.warm_threshold.max(1);
-            return if self.run_heatmap_cli(&directory, bucket_mib, hot_th, warm_th) {
+            return if self.run_heatmap(&directory, bucket_mib, hot_th, warm_th, false) {
                 0
             } else {
                 1
@@ -261,7 +261,8 @@ impl App {
             // LBA 热力图模式（交互：询问分桶与阈值；采样只读 ⇒ 无需 yes 确认）
             if mode_heatmap {
                 let hp = menu::prompt_heatmap_params();
-                self.run_heatmap_cli(&directory, hp.bucket_mib, hp.hot_threshold, hp.warm_threshold);
+                // 交互入口 ⇒ 走交互视图（带色阶图），与 CLI 文本视图分离
+                self.run_heatmap(&directory, hp.bucket_mib, hp.hot_threshold, hp.warm_threshold, true);
                 if !menu::ask_return_to_menu() {
                     break;
                 }
@@ -465,14 +466,16 @@ impl App {
 
 
 
-    /// LBA 热力图采样（CLI 路径）— 抓 block 层 IO，按 LBA 分桶统计冷热。
+    /// LBA 热力图采样 — 抓 block 层 IO，按 LBA 分桶统计冷热。
+    /// `interactive`: true = 走交互视图（带色阶图）；false = 走 CLI 文本视图。
     /// 返回 true = 采样成功；false = 无可用后端或采样失败。
-    fn run_heatmap_cli(
+    fn run_heatmap(
         &self,
         directory: &str,
         bucket_mib: u64,
         hot_th: u64,
         warm_th: u64,
+        interactive: bool,
     ) -> bool {
         crate::terminal::Terminal::clear();
         let eq = "=".repeat(50);
@@ -523,7 +526,12 @@ impl App {
 
         match crate::heatmap::sample(&device, bucket_mib, probe) {
             Ok(hm) => {
-                crate::heatmap::print_heatmap_cli(&hm, hot_th, warm_th);
+                // 交互入口与 CLI 入口分离（issue #8）：交互走带色阶图的视图，CLI 走文本视图
+                if interactive {
+                    crate::heatmap::print_heatmap_interactive(&hm, hot_th, warm_th);
+                } else {
+                    crate::heatmap::print_heatmap_cli(&hm, hot_th, warm_th);
+                }
                 let report = crate::heatmap::save_heatmap_report(&hm, hot_th, warm_th);
                 println!("\n报告已保存 (Report): {}", report);
                 true

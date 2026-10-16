@@ -243,7 +243,10 @@ pub fn block_safety_gate(device_path: &str) -> Result<(bool, Option<String>), St
 }
 
 /// 从分区名推出所属整盘名（nvme0n1p1 → nvme0n1；sda1 → sda）
-fn parent_disk(name: &str) -> Option<String> {
+///
+/// ⚠️ 仅按**命名规则**推断，覆盖 nvme/mmcblk/sdX 三系；`dm-*`（LVM）、`md*`（软 RAID）
+/// 无此规律 ⇒ 返回 None，调用方须自行兜底（如改用 `/sys/class/block/<名>/partition` 存在性判别）。
+pub fn parent_disk(name: &str) -> Option<String> {
     if name.starts_with("nvme") || name.starts_with("mmcblk") {
         if let Some(idx) = name.rfind('p') {
             let (disk, part) = name.split_at(idx);

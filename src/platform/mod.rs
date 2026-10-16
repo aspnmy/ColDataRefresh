@@ -26,7 +26,7 @@ pub use linux::{
 #[cfg(target_os = "linux")]
 pub use linux::{
     block_direct_discard, block_direct_read, block_direct_write, block_geometry, block_safety_gate,
-    clear_readonly, preserve_creation_time,
+    clear_readonly, parent_disk, preserve_creation_time,
 };
 
 #[cfg(target_os = "windows")]

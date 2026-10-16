@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 use crate::log::logger;
@@ -107,8 +108,10 @@ pub struct HeatMap {
     pub bucket_sectors: u64,
     /// 各桶热度（稀疏：只含有访问的桶）
     pub buckets: HashMap<u64, LbaBucket>,
-    /// 设备总扇区数（用于算"未访问桶"）
+    /// 采样基准容量：**整盘**总扇区数（`block_rq_issue` 的 sector 是整盘绝对偏移）
     pub device_sectors: u64,
+    /// 本设备（可能是分区）在整盘内的起始扇区；整盘自身为 0
+    pub partition_start_sectors: u64,
 }
 
 impl HeatMap {
@@ -176,7 +179,7 @@ pub fn probe_backend() -> TraceBackend {
 /// `bucket_mib`: 分桶粒度（MiB）
 /// `probe`: 造 IO 的闭包（由调用方提供，便于测试与不同业务场景）
 pub fn sample<F>(
-    device: &str,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] device: &str,
     bucket_mib: u64,
     probe: F,
 ) -> Result<HeatMap, String>
@@ -195,13 +198,14 @@ where
     }
 
     let bucket_sectors = HeatMap::bucket_size_from_mib(bucket_mib);
-    let device_sectors = device_capacity_sectors(device)?;
 
     // 1) 准备 tracefs：只开 block_rq_issue
-    // ⚠️ tracefs 是 Linux 专有 —— 非 Linux 平台走下方 else 分支直接返回"不支持"，
+    // ⚠️ tracefs 与 sysfs 都是 Linux 专有 —— 非 Linux 平台走下方 else 分支直接返回"不支持"，
     // 避免编译期引用不存在的符号（CI 实测 Windows 目标 error[E0425]）。
     #[cfg(target_os = "linux")]
     {
+        let (device_sectors, partition_start_sectors) = device_capacity_sectors(device)?;
+
         crate::platform::tracefs_reset()?;
         crate::platform::tracefs_enable("block/block_rq_issue", true)?;
         crate::platform::tracefs_set_buffer_kb(2048)?;
@@ -224,6 +228,7 @@ where
             bucket_sectors,
             buckets,
             device_sectors,
+            partition_start_sectors,
         };
 
         logger().log(
@@ -238,12 +243,12 @@ where
         );
 
         probe_result?;
-        return Ok(hm);
+        Ok(hm)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (bucket_sectors, device_sectors, probe, bucket_mib);
+        let _ = (bucket_sectors, probe, bucket_mib);
         Err("LBA 热度采样依赖 tracefs，当前平台不支持 (tracefs is Linux-only)".to_string())
     }
 }
@@ -312,18 +317,169 @@ fn parse_trace(
     Ok((events, buckets))
 }
 
-/// 读设备总扇区数（用于计算"从未访问"的桶）
-fn device_capacity_sectors(device: &str) -> Result<u64, String> {
+/// 读块设备的 sysfs 属性。
+///
+/// ⚠️ sysfs 有两种视图，必须按需择用（1-243 实测）：
+/// - `/sys/block/<name>` —— **只有整盘**，分区读不到（`nvme0n1p1` ⇒ ENOENT）
+/// - `/sys/class/block/<name>` —— **扁平视图，整盘与分区都在**
+///
+/// 目标盘常是分区（如 `/dev/nvme0n1p1`）⇒ 统一走 `/sys/class/block`，两态通吃。
+///
+/// ⚠️ 只有 Linux 分支会用到（`device_capacity_sectors` 按平台门控）⇒ 同样加门控防死代码告警。
+#[cfg(target_os = "linux")]
+fn read_block_attr(name: &str, attr: &str) -> Option<String> {
+    let p = format!("/sys/class/block/{}/{}", name, attr);
+    std::fs::read_to_string(&p).ok().map(|s| s.trim().to_string())
+}
+
+/// 采样基准：整盘扇区数 + 本设备在整盘内的起始扇区。
+///
+/// ⚠️ `block_rq_issue` 的 `sector` 是**整盘绝对偏移**（不是分区内相对偏移）
+/// ⇒ 分桶上界必须用**整盘**容量，否则桶边界与真实 LBA 错位。
+/// 返回 `(整盘扇区数, 本设备起始扇区)`；整盘自身起始为 0。
+///
+/// ⚠️ sysfs 是 Linux 专有 —— 本函数只在 Linux 分支被调用（见 `sample()`），
+/// 非 Linux 目标下 `parent_disk` 不存在 ⇒ 整段按平台门控，避免 Windows 目标编译失败。
+#[cfg(target_os = "linux")]
+fn device_capacity_sectors(device: &str) -> Result<(u64, u64), String> {
     let name = Path::new(device)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .ok_or_else(|| format!("无法解析设备名: {}", device))?;
-    let sysfs = format!("/sys/block/{}/size", name);
-    std::fs::read_to_string(&sysfs)
-        .map_err(|e| format!("读取 {} 失败: {}", sysfs, e))?
-        .trim()
-        .parse::<u64>()
-        .map_err(|e| format!("解析设备容量失败: {}", e))
+
+    // 分区：class/block/<name>/partition 存在 ⇒ 取其所属整盘
+    let is_part = read_block_attr(&name, "partition").is_some();
+    let disk = if is_part {
+        crate::platform::parent_disk(&name)
+            .ok_or_else(|| format!("无法从分区名反解整盘: {}", name))?
+    } else {
+        name.clone()
+    };
+
+    let start = read_block_attr(&name, "start")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let disk_sectors = read_block_attr(&disk, "size")
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .ok_or_else(|| format!("读取 /sys/class/block/{}/size 失败", disk))?;
+
+    Ok((disk_sectors, start))
+}
+
+/// 冷热四档分布条（按占比画实心/空心块，供交互界面展示）
+///
+/// `total` 为总桶数；四档各自画一条按占比长度的色阶条。
+fn hotness_bar(count: u64, total: u64, width: usize) -> String {
+    if total == 0 {
+        return "-".to_string();
+    }
+    let filled = ((count as f64 / total as f64) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    format!("{}{}", "█".repeat(filled), "·".repeat(width - filled))
+}
+
+/// 打印热力图（交互界面版，issue #8 要求交互界面热力图）
+///
+/// 与 `print_heatmap_cli` 的区别：带分桶色阶图与四档分布条，供人在菜单里直观看冷热。
+pub fn print_heatmap_interactive(hm: &HeatMap, hot_th: u64, warm_th: u64) {
+    let eq = "=".repeat(60);
+    println!("\n{}", eq);
+    println!("          LBA 热力图 (LBA Heat Map) — 交互视图");
+    println!("{}", eq);
+
+    let (hot, warm, cold, dead) = hm.classify(hot_th, warm_th);
+    let total_buckets = hm
+        .device_sectors
+        .checked_div(hm.bucket_sectors)
+        .unwrap_or(0);
+
+    println!("采样后端 (Backend):   {}", hm.backend);
+    println!("采样事件 (Events):    {}", hm.events);
+    println!("桶大小 (Bucket):      {} MiB", hm.bucket_sectors / 2048);
+    println!("整盘容量 (Disk):      {} MiB", hm.device_sectors / 2048);
+    println!("采样基准 (LBA base):  整盘绝对偏移 / disk-absolute");
+    if hm.partition_start_sectors > 0 {
+        println!(
+            "分区起始 (Part start):{} 扇区 ({} MiB)",
+            hm.partition_start_sectors,
+            hm.partition_start_sectors / 2048
+        );
+    }
+    println!("{}", eq);
+
+    // 四档分布条
+    println!("冷热分级 (Hotness distribution):");
+    println!(
+        "  🔥 热 (hot)  {:>6} 桶  {}  (>= {} 次)",
+        hot,
+        hotness_bar(hot, total_buckets, 30),
+        hot_th
+    );
+    println!(
+        "  🌤 温 (warm) {:>6} 桶  {}  (>= {} 次)",
+        warm,
+        hotness_bar(warm, total_buckets, 30),
+        warm_th
+    );
+    println!(
+        "  🧊 冷 (cold) {:>6} 桶  {}  (< {} 次) ← 建议刷新",
+        cold,
+        hotness_bar(cold, total_buckets, 30),
+        warm_th
+    );
+    println!(
+        "  ⬜ 死 (dead) {:>6} 桶  {}  (从未访问)",
+        dead,
+        hotness_bar(dead, total_buckets, 30)
+    );
+
+    // 桶级色阶图：按桶序号升序，用字符表示热力强度
+    println!("\nLBA 分桶热力条 (Bucket heat strip, 冷→热):");
+    let mut idx: Vec<u64> = hm.buckets.keys().copied().collect();
+    idx.sort_unstable();
+    if idx.is_empty() {
+        println!("  (无采样数据 / no samples)");
+    } else if idx.len() > 64 {
+        println!("  (共 {} 个有访问的桶，仅示前 64 / showing first 64)", idx.len());
+    }
+    let max_io = hm
+        .buckets
+        .values()
+        .map(|b| b.total_io())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
+    for (n, i) in idx.iter().enumerate() {
+        if n >= 64 {
+            break;
+        }
+        let b = &hm.buckets[i];
+        let io = b.total_io();
+        let ratio = io as f64 / max_io as f64;
+        let level = (ratio * 8.0).ceil() as usize;
+        let glyph = match level {
+            0..=1 => "▁",
+            2..=3 => "▃",
+            4..=5 => "▅",
+            6..=7 => "▆",
+            _ => "█",
+        };
+        let tag = b.hotness(hot_th, warm_th).label();
+        println!(
+            "  {:>6} {}{:<7} LBA[{:>10}..{:>10})  读写 {:>5}/{:>5}",
+            b.index,
+            glyph.repeat(((ratio * 20.0).ceil() as usize).clamp(1, 20)),
+            tag,
+            b.start_sector,
+            b.start_sector + b.sectors,
+            b.reads,
+            b.writes
+        );
+    }
+    println!("{}", eq);
 }
 
 /// 打印热力图（CLI 模式，issue #8 要求 CLI 热力图）
