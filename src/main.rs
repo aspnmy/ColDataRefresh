@@ -16,6 +16,7 @@ mod file_op;
 mod full_refresh;
 mod heatmap;
 mod log;
+mod menu;
 mod platform;
 mod terminal;
 

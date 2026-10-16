@@ -7,6 +7,15 @@ use crate::file_op;
 use crate::log::logger;
 use crate::platform;
 
+/// 全盘刷新参数（交互与 CLI 共用的输入结构）
+#[derive(Debug, Clone, Copy)]
+pub struct FullRefreshParams {
+    pub keep_files: bool,
+    pub fill_free: bool,
+    pub unit_gb: u64,
+    pub write_buf_kb: u64,
+}
+
 /// 全盘刷新管理器 — 实现完整的全盘刷新业务流程
 pub struct FullRefresh;
 

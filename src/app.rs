@@ -1,6 +1,6 @@
 //! 应用控制器 —— CLI 非交互模式与交互菜单模式的流程编排。
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -9,6 +9,7 @@ use crate::dashboard::{Dashboard, Stats};
 use crate::file_op;
 use crate::full_refresh::FullRefresh;
 use crate::log::logger;
+use crate::menu;
 use crate::platform;
 
 //// ========================== CLI 模式 (CLI mode) ==========================
@@ -199,26 +200,33 @@ impl App {
         let cli_skip_smaller_mb = opts.skip_smaller;
 
         // 打印启动横幅
-        self.show_startup_banner();
+        menu::show_startup_banner();
 
         loop {
             // 重置统计
             self.stats = Stats::default();
 
             // 获取模式选择
-            let (mode_full, mode_trim, mode_cycle) = if !full_refresh && !trim_mode && !cycle_check {
-                self.show_mode_menu()
-            } else {
-                (full_refresh, trim_mode, cycle_check)
-            };
+            let (mode_full, mode_trim, mode_cycle, mode_heatmap) =
+                if !full_refresh && !trim_mode && !cycle_check && !opts.heatmap {
+                    match menu::show_mode_menu() {
+                        menu::ModeChoice::FullRefresh => (true, false, false, false),
+                        menu::ModeChoice::Trim => (false, true, false, false),
+                        menu::ModeChoice::CycleCheck => (false, false, true, false),
+                        menu::ModeChoice::Heatmap => (false, false, false, true),
+                        menu::ModeChoice::Smart => (false, false, false, false),
+                    }
+                } else {
+                    (full_refresh, trim_mode, cycle_check, opts.heatmap)
+                };
 
             // 确认操作
             if mode_full {
-                if !self.confirm_full_refresh() {
+                if !menu::confirm_full_refresh() {
                     continue;
                 }
-            } else if (mode_trim && !self.confirm_trim())
-                || (mode_cycle && !self.confirm_cycle_check())
+            } else if (mode_trim && !menu::confirm_trim())
+                || (mode_cycle && !menu::confirm_cycle_check())
             {
                 continue;
             }
@@ -227,12 +235,12 @@ impl App {
             self.dashboard.trim_mode = mode_trim;
 
             // 获取目录
-            let directory = self.prompt_directory();
+            let directory = menu::prompt_directory();
 
             // TRIM 模式 — 直接执行
             if mode_trim {
                 self.run_trim_mode(&directory);
-                if !self.ask_return_to_menu() {
+                if !menu::ask_return_to_menu() {
                     break;
                 }
                 continue;
@@ -244,7 +252,17 @@ impl App {
                 let unit_gb = opts.unit_gb.clamp(1, 100);
                 let write_buf_kb = opts.write_buf_kb.clamp(64, 1024 * 1024);
                 self.run_cycle_check_cli(&directory, cycles, unit_gb, write_buf_kb);
-                if !self.ask_return_to_menu() {
+                if !menu::ask_return_to_menu() {
+                    break;
+                }
+                continue;
+            }
+
+            // LBA 热力图模式（交互：询问分桶与阈值；采样只读 ⇒ 无需 yes 确认）
+            if mode_heatmap {
+                let hp = menu::prompt_heatmap_params();
+                self.run_heatmap_cli(&directory, hp.bucket_mib, hp.hot_threshold, hp.warm_threshold);
+                if !menu::ask_return_to_menu() {
                     break;
                 }
                 continue;
@@ -253,22 +271,22 @@ impl App {
             // 全盘刷新模式
             if mode_full {
                 self.run_full_refresh_mode(&directory);
-                if !self.ask_return_to_menu() {
+                if !menu::ask_return_to_menu() {
                     break;
                 }
                 continue;
             }
 
             // 智能模式
-            let min_days = cli_age.unwrap_or_else(|| self.prompt_age());
+            let min_days = cli_age.unwrap_or_else(menu::prompt_age);
             let skip_small = if cli_skip_smaller_mb.unwrap_or(0) > 0 {
                 true
             } else {
-                self.prompt_skip_small()
+                menu::prompt_skip_small()
             };
             self.dashboard.min_days = min_days;
             self.dashboard.skip_small = skip_small;
-            self.dashboard.buffer_size_mb = self.prompt_buffer_size();
+            self.dashboard.buffer_size_mb = menu::prompt_buffer_size();
             self.dashboard.working_directory = directory.clone();
 
             let code = self.run_smart_refresh(&directory, min_days, skip_small);
@@ -278,7 +296,7 @@ impl App {
                 continue;
             }
 
-            if !self.ask_return_to_menu() {
+            if !menu::ask_return_to_menu() {
                 break;
             }
         }
@@ -428,23 +446,6 @@ impl App {
         }
     }
 
-    /// 打印启动横幅
-    fn show_startup_banner(&self) {
-        let admin = if platform::is_admin() {
-            " [管理员/Admin]"
-        } else {
-            ""
-        };
-        let os_info = platform::get_os_display();
-        let eq = "=".repeat(50);
-
-        println!("{}", eq);
-        println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
-        println!("运行平台 (Platform): {}", os_info);
-        println!("作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294");
-        println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
-        println!("{}", eq);
-    }
 
     /// 更新文件分类统计
     fn update_file_stats(&mut self, file_size: u64) {
@@ -455,184 +456,14 @@ impl App {
         }
     }
 
-    fn show_mode_menu(&self) -> (bool, bool, bool) {
-        crate::terminal::Terminal::clear();
-        let admin = if platform::is_admin() { " [管理员/Admin]" } else { "" };
-        let os_info = platform::get_os_display();
-        let eq = "=".repeat(50);
 
-        println!("{}", eq);
-        println!("SSD掉速激活-冷数据维护系统 v5.0.3{}", admin);
-        println!("运行平台 (Platform): {}  |  作者 (Author): support@e2bank.cn  QQ群 (Group): 115405294", os_info);
-        println!("GitHub: https://github.com/aspnmy/ColDataRefresh");
-        println!("{}", eq);
 
-        println!("\n{}", eq);
-        println!("          冷数据维护工具 - 操作模式选择 (Cold Data Tool - Mode Selection)");
-        println!("{}", eq);
-        println!("1. 智能模式 (Smart Mode) (推荐/Recommended) - 保留原文件内容，仅激活冷数据 (keep contents, refresh cold data only)");
-        println!("2. 全盘刷新模式 (Full Refresh Mode) (所有文件全部丢失无法找回/ALL DATA LOST, UNRECOVERABLE) - 将文件内容替换为 FF 值 (overwrite with 0xFF)");
-        println!("3. TRIM优化模式 (TRIM Optimization Mode) (如需找回数据不要使用/CANNOT recover deleted data) - 通知SSD哪些数据块无效 (notify SSD which blocks are invalid)");
-        println!("4. 跑圈校验模式 (Cycle Check Mode) (所有文件全部丢失无法找回/ALL DATA LOST, UNRECOVERABLE) - 1GB随机数据+校验码，写满后回读校验以定位坏块 (locate bad blocks)");
-        println!("{}", eq);
 
-        loop {
-            print!("请选择操作模式 (Select mode) [1/2/3/4]: ");
-            io::stdout().flush().ok();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).ok();
-            match input.trim() {
-                "1" => {
-                    logger().log("用户选择操作模式: 智能模式", "INFO");
-                    return (false, false, false);
-                }
-                "2" => {
-                    logger().log("用户选择操作模式: 全盘刷新模式", "INFO");
-                    return (true, false, false);
-                }
-                "3" => {
-                    logger().log("用户选择操作模式: TRIM模式", "INFO");
-                    return (false, true, false);
-                }
-                "4" => {
-                    logger().log("用户选择操作模式: 跑圈校验模式", "INFO");
-                    return (false, false, true);
-                }
-                _ => println!("无效的选择，请输入 1、2、3 或 4 (Invalid choice, enter 1, 2, 3 or 4)"),
-            }
-        }
-    }
 
-    fn confirm_full_refresh(&self) -> bool {
-        println!("\n⚠️  警告 (WARNING): 正在使用全盘数据刷新模式 (Full Refresh Mode)！");
-        println!("   此模式将完全擦除SSD数据，所有文件内容将丢失且无法找回 (erases all data, unrecoverable)！");
-        println!();
 
-        print!("请输入 'yes' 确认执行全盘刷新操作 (第一次) (type 'yes' to confirm, 1st): ");
-        io::stdout().flush().ok();
-        let mut c1 = String::new();
-        io::stdin().read_line(&mut c1).ok();
-        if c1.trim().to_lowercase() != "yes" {
-            println!("操作已取消 (Cancelled)");
-            return false;
-        }
 
-        print!("请再次输入 'yes' 确认执行全盘刷新操作 (第二次) (type 'yes' again, 2nd): ");
-        io::stdout().flush().ok();
-        let mut c2 = String::new();
-        io::stdin().read_line(&mut c2).ok();
-        if c2.trim().to_lowercase() != "yes" {
-            println!("操作已取消 (Cancelled)");
-            return false;
-        }
 
-        logger().log("用户已确认两次，开始执行全盘刷新操作", "INFO");
-        true
-    }
 
-    fn confirm_trim(&self) -> bool {
-        println!("\n⚠️  警告 (WARNING): 正在使用TRIM优化模式 (TRIM Optimization)！");
-        println!("   如需找回SSD中删除的数据请勿使用此模式 (do NOT use if you need to recover data)！");
-        println!();
-
-        print!("请输入 'yes' 确认 (type 'yes' to confirm): ");
-        io::stdout().flush().ok();
-        let mut c = String::new();
-        io::stdin().read_line(&mut c).ok();
-        if c.trim().to_lowercase() != "yes" {
-            println!("操作已取消 (Cancelled)");
-            return false;
-        }
-
-        logger().log("用户已确认，开始执行TRIM优化操作", "INFO");
-        true
-    }
-
-    /// 跑圈校验确认 — 破坏性操作，交互模式下需输入 yes
-    fn confirm_cycle_check(&self) -> bool {
-        println!("\n⚠️  警告 (WARNING): 正在使用跑圈校验模式 (Cycle Check Mode)！");
-        println!("   此模式会写入 1GB 随机数据并覆写整盘空间，所有文件内容将丢失且无法找回");
-        println!("   (writes 1GB random blocks over free space; ALL DATA LOST, UNRECOVERABLE)！");
-        println!();
-
-        print!("请输入 'yes' 确认执行跑圈校验操作 (type 'yes' to confirm): ");
-        io::stdout().flush().ok();
-        let mut c = String::new();
-        io::stdin().read_line(&mut c).ok();
-        if c.trim().to_lowercase() != "yes" {
-            println!("操作已取消 (Cancelled)");
-            return false;
-        }
-
-        logger().log("用户已确认，开始执行跑圈校验操作", "INFO");
-        true
-    }
-
-    fn prompt_directory(&mut self) -> String {
-        print!("扫描目录 (Scan directory): ");
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        let dir = input.trim().trim_matches('"').to_string();
-
-        // 补齐路径分隔符
-        let dir = if !dir.ends_with(&['\\', '/'][..]) {
-            dir + "\\"
-        } else {
-            dir
-        };
-
-        self.dashboard.working_directory = dir.clone();
-        dir
-    }
-
-    fn prompt_age(&self) -> u32 {
-        print!("数据时效/天 (Data age in days): ");
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        input.trim().parse().unwrap_or(0)
-    }
-
-    fn prompt_skip_small(&self) -> bool {
-        print!("跳过小文件? (Skip small files?) (y/n): ");
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        input.trim().to_lowercase() == "y"
-    }
-
-    fn prompt_buffer_size(&self) -> u32 {
-        print!("处理缓冲区大小/MB (Buffer size, default 512, max 2048): ");
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        let val: u32 = input.trim().parse().unwrap_or(512);
-        val.clamp(64, 2048)
-    }
-
-    fn ask_return_to_menu(&self) -> bool {
-        crate::terminal::Terminal::clear();
-        println!("\n{}", "=".repeat(50));
-        println!("1. 返回 - 回到交互界面 (Back to menu)");
-        println!("2. 退出 - 关闭程序 (Exit)");
-        println!("{}", "=".repeat(50));
-
-        loop {
-            print!("请选择操作 (Select action) [1/2]: ");
-            io::stdout().flush().ok();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).ok();
-            match input.trim() {
-                "1" => return true,
-                "2" => {
-                    println!("感谢使用冷数据维护工具，再见！(Thanks for using, goodbye!)");
-                    return false;
-                }
-                _ => println!("无效的选择，请输入 1 或 2 (Invalid choice, enter 1 or 2)"),
-            }
-        }
-    }
 
     /// LBA 热力图采样（CLI 路径）— 抓 block 层 IO，按 LBA 分桶统计冷热。
     /// 返回 true = 采样成功；false = 无可用后端或采样失败。
@@ -766,43 +597,16 @@ impl App {
             println!("3. TRIM操作有助于提高SSD性能并延长使用寿命 (improves SSD performance/lifespan)");
             println!("{}", eq);
             print!("状态 (Status): 执行中 (running) ");
-            use std::io::Write;
             std::io::stdout().flush().ok();
 
-            // 在后台线程执行 TRIM，主线程显示旋转动画
-            use std::sync::atomic::{AtomicBool, Ordering};
-            use std::sync::{Arc, Mutex};
-            let done = Arc::new(AtomicBool::new(false));
-            let done_clone = done.clone();
             // 用共享槽把工作线程的真实结果带回主线程（原实现丢弃了它）
-            let outcome = Arc::new(Mutex::new(false));
-            let outcome_clone = outcome.clone();
             let d = dev.clone();
-            let _handle = std::thread::spawn(move || {
-                let ok = platform::trim_volume(&d);
-                if let Ok(mut slot) = outcome_clone.lock() {
-                    *slot = ok;
-                }
-                done_clone.store(true, Ordering::Relaxed);
+            let ok = menu::run_with_spinner("状态 (Status): 执行中 (running)", move || {
+                platform::trim_volume(&d)
             });
-
-            let spinner = ['|', '/', '-', '\\'];
-            let mut i = 0;
-            while !done.load(Ordering::Relaxed) {
-                print!("\r状态 (Status): 执行中 (running) {} 请耐心等待 (please wait)...", spinner[i % 4]);
-                std::io::stdout().flush().ok();
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                i += 1;
-            }
-
-            let ok = *outcome.lock().unwrap_or_else(|e| e.into_inner());
             logger().log(
                 &format!("TRIM 操作完成: 设备={}, 成功={}", dev, ok),
                 "INFO",
-            );
-            println!(
-                "\r状态 (Status): {}                    ",
-                if ok { "✅ 完成 (Done)" } else { "❌ 失败 (Failed)" }
             );
             (ok, dev)
         } else {
@@ -833,7 +637,7 @@ impl App {
 
     /// 全盘刷新（交互模式）— 通过 stdin 询问参数，返回真实执行结果
     fn run_full_refresh_mode(&self, directory: &str) -> bool {
-        let params = self.prompt_full_refresh_params(directory);
+        let params = menu::prompt_full_refresh_params();
         self.execute_full_refresh(directory, params)
     }
 
@@ -851,7 +655,7 @@ impl App {
             return false;
         };
 
-        let params = FullRefreshParams {
+        let params = crate::full_refresh::FullRefreshParams {
             keep_files: keep,
             fill_free: opts.fill_free,
             unit_gb: opts.unit_gb.clamp(1, 100),
@@ -860,60 +664,13 @@ impl App {
         self.execute_full_refresh(directory, params)
     }
 
-    /// 全盘刷新参数（交互与 CLI 共用的输入结构）
-    fn prompt_full_refresh_params(&self, directory: &str) -> FullRefreshParams {
-        // 询问是否保留文件（总是需要）
-        print!("\n是否保留已使用空间中的文件? (Keep existing files?) (Y/N, 默认/default Y): ");
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        let keep = !input.trim().to_lowercase().starts_with('n');
-
-        // 询问是否额外填充空闲空间
-        print!("\n是否同时填充空闲空间? (Also fill free space?) (Y/N, 默认/default N): ");
-        io::stdout().flush().ok();
-        let mut fill_input = String::new();
-        io::stdin().read_line(&mut fill_input).ok();
-        let want_fill = fill_input.trim().to_lowercase().starts_with('y');
-
-        // 如果用户选择填充，再次确认
-        let fill_free = if want_fill {
-            print!("\n⚠️  填充空闲空间将覆写所有未分配空间，数据无法还原 (unrecoverable)！\n是否确认执行? (Confirm?) (Y/N, 默认/default N): ");
-            io::stdout().flush().ok();
-            let mut confirm = String::new();
-            io::stdin().read_line(&mut confirm).ok();
-            confirm.trim().to_lowercase().starts_with('y')
-        } else {
-            false
-        };
-
-        // 询问写入参数（仅填充空闲空间时需要）
-        let (unit_gb, write_buf_kb) = if fill_free {
-            print!("\n请输入每个文件的写入容量 (Write size per file) (1-100GB, 默认/default 50GB): ");
-            io::stdout().flush().ok();
-            let mut cap = String::new();
-            io::stdin().read_line(&mut cap).ok();
-            let val: u64 = cap.trim().parse().unwrap_or(50);
-            let unit_gb = val.clamp(1, 100);
-
-            print!("\n请输入写入缓冲区大小 (Write buffer size) (64KB~1GB, 默认/default 512MB): ");
-            io::stdout().flush().ok();
-            let mut buf_input = String::new();
-            io::stdin().read_line(&mut buf_input).ok();
-            let buf_val: u64 = buf_input.trim().parse().unwrap_or(512);
-            let write_buf_kb = buf_val.clamp(1, 1024) * 1024;
-
-            (unit_gb, write_buf_kb)
-        } else {
-            (0, 64)
-        };
-
-        let _ = directory;
-        FullRefreshParams { keep_files: keep, fill_free, unit_gb, write_buf_kb }
-    }
 
     /// 全盘刷新执行核心 — 交互与 CLI 共用，全程无 stdin
-    fn execute_full_refresh(&self, directory: &str, params: FullRefreshParams) -> bool {
+    fn execute_full_refresh(
+        &self,
+        directory: &str,
+        params: crate::full_refresh::FullRefreshParams,
+    ) -> bool {
         crate::terminal::Terminal::clear();
         logger().log(&format!("开始全盘刷新模式: 路径='{}'", directory), "INFO");
 
@@ -965,12 +722,4 @@ impl App {
             params.write_buf_kb,
         )
     }
-}
-
-/// 全盘刷新的输入参数
-struct FullRefreshParams {
-    keep_files: bool,
-    fill_free: bool,
-    unit_gb: u64,
-    write_buf_kb: u64,
 }
